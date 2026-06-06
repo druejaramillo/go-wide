@@ -33,3 +33,8 @@ go.work.sum
 
 # Temp files
 tmp/
+
+# Coding agent configs
+.agents/
+.claude/
+.opencode/
