@@ -13,7 +13,7 @@ type contextKey string
 const (
 	parentContextKey contextKey = "go-wide.ops.parent_context"
 	operationKey     contextKey = "go-wide.ops.operation"
-	ErrorKey         contextKey = "go-wide.ops.error"
+	errorKey         contextKey = "go-wide.ops.error"
 )
 
 type Subscriber interface {

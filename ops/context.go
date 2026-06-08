@@ -11,7 +11,7 @@ func GetOperationFromContext(ctx context.Context) *Operation {
 }
 
 func GetErrorFromContext(ctx context.Context) error {
-	err, ok := ctx.Value(ErrorKey).(error)
+	err, ok := ctx.Value(errorKey).(error)
 	if !ok {
 		return nil
 	}

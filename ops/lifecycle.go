@@ -40,7 +40,3 @@ func End(ctx context.Context) (context.Context, error) {
 	}
 	return ctx, nil
 }
-
-func Error(ctx context.Context, err error) context.Context {
-	return nil
-}
