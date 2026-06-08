@@ -5,18 +5,27 @@ import (
 	"errors"
 )
 
-func StartRoot(ctx context.Context, op string) (context.Context, error) {
+func StartRoot(ctx context.Context, op string, opts ...Option) (context.Context, error) {
 	if GetOperationFromContext(ctx) != nil {
 		return ctx, errors.New("cannot create a nested root operation")
 	}
 	ctx = context.WithValue(ctx, parentContextKey, ctx)
-	return context.WithValue(ctx, operationKey, &Operation{
+	rc := &rootConfig{}
+	for _, opt := range opts {
+		opt(rc)
+	}
+	operation := &Operation{
 		Op:          op,
 		Description: "",
 		parent:      nil,
 		parentOps:   []string{},
-		subscribers: []Subscriber{},
-	}), nil
+		rootConfig:  rc,
+	}
+	ctx = context.WithValue(ctx, operationKey, operation)
+	for _, o := range rc.lifecycleObservers {
+		ctx = o.OnStart(ctx, operation)
+	}
+	return ctx, nil
 }
 
 func Start(ctx context.Context, op string) (context.Context, error) {
@@ -26,20 +35,29 @@ func Start(ctx context.Context, op string) (context.Context, error) {
 		return ctx, errors.New("expected a parent operation")
 	}
 	parentOps = parent.Ops()
+	rc := parent.rootConfig
 	operation := &Operation{
 		Op:          op,
 		Description: "",
 		parent:      parent,
 		parentOps:   parentOps,
-		subscribers: []Subscriber{},
+		rootConfig:  rc,
 	}
 	ctx = context.WithValue(ctx, parentContextKey, ctx)
-	return context.WithValue(ctx, operationKey, operation), nil
+	ctx = context.WithValue(ctx, operationKey, operation)
+	for _, o := range rc.lifecycleObservers {
+		ctx = o.OnStart(ctx, operation)
+	}
+	return ctx, nil
 }
 
 func End(ctx context.Context) (context.Context, error) {
-	if GetOperationFromContext(ctx) == nil {
+	operation := GetOperationFromContext(ctx)
+	if operation == nil {
 		return ctx, errors.New("expected an active operation")
+	}
+	for _, o := range operation.rootConfig.lifecycleObservers {
+		_ = o.OnEnd(ctx, operation)
 	}
 	ctx, ok := ctx.Value(parentContextKey).(context.Context)
 	if !ok {
