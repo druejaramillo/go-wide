@@ -11,8 +11,9 @@ import "context"
 type contextKey string
 
 const (
-	operationKey contextKey = "go-wide.ops.operation"
-	ErrorKey     contextKey = "go-wide.ops.error"
+	parentContextKey contextKey = "go-wide.ops.parent_context"
+	operationKey     contextKey = "go-wide.ops.operation"
+	ErrorKey         contextKey = "go-wide.ops.error"
 )
 
 type Subscriber interface {
