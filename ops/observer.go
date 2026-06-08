@@ -12,3 +12,13 @@ func WithLifecycleObserver(o LifecycleObserver) Option {
 		rc.lifecycleObservers = append(rc.lifecycleObservers, o)
 	}
 }
+
+type ErrorObserver interface {
+	OnError(ctx context.Context, op *Operation, err error)
+}
+
+func WithErrorObserver(o ErrorObserver) Option {
+	return func(rc *rootConfig) {
+		rc.errorObservers = append(rc.errorObservers, o)
+	}
+}

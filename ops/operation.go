@@ -29,6 +29,7 @@ func (o *Operation) Ops() []string {
 
 type rootConfig struct {
 	lifecycleObservers []LifecycleObserver
+	errorObservers     []ErrorObserver
 }
 
 type Option func(*rootConfig)

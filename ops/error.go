@@ -6,12 +6,20 @@ import (
 )
 
 func Error(ctx context.Context, err error) (context.Context, error) {
-	if GetOperationFromContext(ctx) == nil {
+	operation := GetOperationFromContext(ctx)
+	if operation == nil {
 		return ctx, errors.New("expected an active operation")
+	}
+	if err == nil {
+		return ctx, nil
+	}
+	for _, o := range operation.rootConfig.errorObservers {
+		o.OnError(ctx, operation, err)
 	}
 	currentErr := GetErrorFromContext(ctx)
 	if currentErr != nil {
 		return ctx, nil
 	}
-	return context.WithValue(ctx, errorKey, err), nil
+	ctx = context.WithValue(ctx, errorKey, err)
+	return ctx, nil
 }
