@@ -6,6 +6,8 @@ are configured.
 */
 package ops
 
+import "log/slog"
+
 type contextKey string
 
 const (
@@ -20,11 +22,16 @@ type Operation struct {
 	parent      *Operation
 	parentOps   []string
 	rootConfig  *rootConfig
+	attrs       []slog.Attr
 }
 
 func (o *Operation) Ops() []string {
 	ops := append(o.parentOps, o.Op)
 	return ops
+}
+
+func (o *Operation) Attrs() []slog.Attr {
+	return o.attrs
 }
 
 type rootConfig struct {
