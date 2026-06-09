@@ -124,3 +124,42 @@ func TestHandlerRootOptionAttachesExplicitlyWithoutBreakingPassthrough(t *testin
 		}
 	})
 }
+
+func TestDerivedHandlerRetainsRootOptionAndPassthrough(t *testing.T) {
+	var output bytes.Buffer
+	derived := NewHandler(slog.NewJSONHandler(&output, nil)).WithGroup("request").WithAttrs([]slog.Attr{slog.String("id", "req-123")})
+
+	attachable, ok := derived.(interface{ RootOption() ops.Option })
+	if !ok {
+		t.Fatal("derived handler does not expose RootOption()")
+	}
+
+	rootCtx, err := ops.StartRoot(context.Background(), "root", attachable.RootOption())
+	if err != nil {
+		t.Fatalf("StartRoot() error = %v", err)
+	}
+
+	logger := slog.New(derived)
+	logger.InfoContext(rootCtx, "derived handler passthrough", slog.Int("attempt", 1))
+
+	var got map[string]any
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v; output = %q", err, output.String())
+	}
+
+	request, ok := got["request"].(map[string]any)
+
+	t.Run("retains grouped passthrough output", func(t *testing.T) {
+		if !ok {
+			t.Fatalf("request group = %T, want map[string]any", got["request"])
+		}
+
+		if request["id"] != "req-123" {
+			t.Fatalf("request.id = %v, want %q", request["id"], "req-123")
+		}
+
+		if request["attempt"] != float64(1) {
+			t.Fatalf("request.attempt = %v, want %v", request["attempt"], 1)
+		}
+	})
+}

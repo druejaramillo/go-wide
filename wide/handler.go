@@ -28,11 +28,11 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 }
 
 func (h *Handler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return h.handler.WithAttrs(attrs)
+	return &Handler{handler: h.handler.WithAttrs(attrs)}
 }
 
 func (h *Handler) WithGroup(name string) slog.Handler {
-	return h.handler.WithGroup(name)
+	return &Handler{handler: h.handler.WithGroup(name)}
 }
 
 func (h *Handler) RootOption() ops.Option {
