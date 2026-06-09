@@ -150,6 +150,13 @@ func TestHandlerRootOptionAttachesStateToTheRoot(t *testing.T) {
 			t.Fatal("expected RootOption to attach state to the root config")
 		}
 	})
+
+	t.Run("RootOption registers a root-owned lifecycle hook", func(t *testing.T) {
+		counts := rootConfigObserverCounts(t, attachedCtx)
+		if counts.lifecycle == 0 {
+			t.Fatal("expected RootOption to register at least one lifecycle observer")
+		}
+	})
 }
 
 func TestDerivedHandlerRetainsRootOptionAndPassthrough(t *testing.T) {
@@ -400,6 +407,40 @@ func recordAttrs(record slog.Record) map[string]any {
 
 func rootConfigHasAttachmentState(t *testing.T, ctx context.Context) bool {
 	t.Helper()
+	counts := rootConfigObserverCounts(t, ctx)
+	if counts.lifecycle != 0 || counts.error != 0 {
+		return true
+	}
+
+	rootConfig := rootConfigValue(t, ctx)
+	for _, field := range rootConfig.Fields() {
+		if field.Kind() == reflect.Slice && field.Len() == 0 {
+			continue
+		}
+		if !field.IsZero() {
+			return true
+		}
+	}
+
+	return false
+}
+
+type observerCounts struct {
+	lifecycle int
+	error     int
+}
+
+func rootConfigObserverCounts(t *testing.T, ctx context.Context) observerCounts {
+	t.Helper()
+	rootConfig := rootConfigValue(t, ctx)
+	return observerCounts{
+		lifecycle: rootConfig.FieldByName("LifecycleObservers").Len(),
+		error:     rootConfig.FieldByName("ErrorObservers").Len(),
+	}
+}
+
+func rootConfigValue(t *testing.T, ctx context.Context) reflect.Value {
+	t.Helper()
 
 	op := ops.GetOperationFromContext(ctx)
 	if op == nil {
@@ -411,12 +452,5 @@ func rootConfigHasAttachmentState(t *testing.T, ctx context.Context) bool {
 		t.Fatal("expected root operation to hold a root config")
 	}
 
-	rootConfig = rootConfig.Elem()
-	for _, field := range rootConfig.Fields() {
-		if !field.IsZero() {
-			return true
-		}
-	}
-
-	return false
+	return rootConfig.Elem()
 }

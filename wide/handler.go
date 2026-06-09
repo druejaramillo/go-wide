@@ -37,9 +37,24 @@ func (h *Handler) WithGroup(name string) slog.Handler {
 	return &Handler{handler: h.handler.WithGroup(name)}
 }
 
+type NoopLifecycleObserver struct{}
+
+func (o NoopLifecycleObserver) OnStart(ctx context.Context, op *ops.Operation) context.Context {
+	return ctx
+}
+
+func (o NoopLifecycleObserver) OnEnd(ctx context.Context, op *ops.Operation) context.Context {
+	return ctx
+}
+
+type NoopErrorObserver struct{}
+
+func (o NoopErrorObserver) OnError(ctx context.Context, op *ops.Operation, err error) {
+}
+
 func (h *Handler) RootOption() ops.Option {
 	return func(rc *ops.RootConfig) {
-		rc.LifecycleObservers = make([]ops.LifecycleObserver, 0)
-		rc.ErrorObservers = make([]ops.ErrorObserver, 0)
+		rc.LifecycleObservers = append(rc.LifecycleObservers, NoopLifecycleObserver{})
+		rc.ErrorObservers = append(rc.ErrorObservers, NoopErrorObserver{})
 	}
 }
