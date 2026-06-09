@@ -21,7 +21,7 @@ type Operation struct {
 	Description string
 	parent      *Operation
 	parentOps   []string
-	rootConfig  *rootConfig
+	rootConfig  *RootConfig
 	attrs       []slog.Attr
 }
 
@@ -34,9 +34,9 @@ func (o *Operation) Attrs() []slog.Attr {
 	return o.attrs
 }
 
-type rootConfig struct {
+type RootConfig struct {
 	lifecycleObservers []LifecycleObserver
 	errorObservers     []ErrorObserver
 }
 
-type Option func(*rootConfig)
+type Option func(*RootConfig)

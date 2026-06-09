@@ -10,7 +10,7 @@ func StartRoot(ctx context.Context, op string, opts ...Option) (context.Context,
 		return ctx, errors.New("cannot create a nested root operation")
 	}
 	ctx = context.WithValue(ctx, parentContextKey, ctx)
-	rc := &rootConfig{}
+	rc := &RootConfig{}
 	for _, opt := range opts {
 		opt(rc)
 	}

@@ -7,13 +7,15 @@ package wide
 import (
 	"context"
 	"log/slog"
+
+	"github.com/druejaramillo/go-wide/ops"
 )
 
 type Handler struct {
 	handler slog.Handler
 }
 
-func NewHandler(h slog.Handler) slog.Handler {
+func NewHandler(h slog.Handler) *Handler {
 	return &Handler{handler: h}
 }
 
@@ -31,4 +33,9 @@ func (h *Handler) WithAttrs(attrs []slog.Attr) slog.Handler {
 
 func (h *Handler) WithGroup(name string) slog.Handler {
 	return h.handler.WithGroup(name)
+}
+
+func (h *Handler) RootOption() ops.Option {
+	return func(rc *ops.RootConfig) {
+	}
 }

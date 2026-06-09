@@ -2,9 +2,12 @@ package wide
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"testing"
+
+	"github.com/druejaramillo/go-wide/ops"
 )
 
 func TestHandlerPassthroughWithoutOperationContext(t *testing.T) {
@@ -49,6 +52,75 @@ func TestHandlerPassthroughWithoutOperationContext(t *testing.T) {
 
 		if request["id"] != "req-123" {
 			t.Fatalf("request.id = %v, want %q", request["id"], "req-123")
+		}
+	})
+}
+
+func TestHandlerPassthroughWithOperationContextWithoutRootAttachment(t *testing.T) {
+	rootCtx, err := ops.StartRoot(context.Background(), "root")
+	if err != nil {
+		t.Fatalf("StartRoot() error = %v", err)
+	}
+
+	var output bytes.Buffer
+	logger := slog.New(NewHandler(slog.NewJSONHandler(&output, nil)))
+
+	logger.With("request_id", "req-123").InfoContext(rootCtx, "passthrough with operation", slog.Int("attempt", 1))
+
+	var got map[string]any
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v; output = %q", err, output.String())
+	}
+
+	t.Run("preserves message", func(t *testing.T) {
+		if got["msg"] != "passthrough with operation" {
+			t.Fatalf("message = %v, want %q", got["msg"], "passthrough with operation")
+		}
+	})
+
+	t.Run("preserves level", func(t *testing.T) {
+		if got["level"] != "INFO" {
+			t.Fatalf("level = %v, want %q", got["level"], "INFO")
+		}
+	})
+
+	t.Run("emits ordinary attrs immediately", func(t *testing.T) {
+		if got["request_id"] != "req-123" {
+			t.Fatalf("request_id = %v, want %q", got["request_id"], "req-123")
+		}
+
+		if got["attempt"] != float64(1) {
+			t.Fatalf("attempt = %v, want %v", got["attempt"], 1)
+		}
+	})
+}
+
+func TestHandlerRootOptionAttachesExplicitlyWithoutBreakingPassthrough(t *testing.T) {
+	var output bytes.Buffer
+	handler := NewHandler(slog.NewJSONHandler(&output, nil))
+
+	rootCtx, err := ops.StartRoot(context.Background(), "root", handler.RootOption())
+	if err != nil {
+		t.Fatalf("StartRoot() error = %v", err)
+	}
+
+	logger := slog.New(handler)
+	logger.InfoContext(rootCtx, "attached passthrough log", slog.String("request_id", "req-123"))
+
+	var got map[string]any
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v; output = %q", err, output.String())
+	}
+
+	t.Run("allows explicit root attachment", func(t *testing.T) {
+		if got["msg"] != "attached passthrough log" {
+			t.Fatalf("message = %v, want %q", got["msg"], "attached passthrough log")
+		}
+	})
+
+	t.Run("keeps passthrough output ordinary", func(t *testing.T) {
+		if got["request_id"] != "req-123" {
+			t.Fatalf("request_id = %v, want %q", got["request_id"], "req-123")
 		}
 	})
 }
