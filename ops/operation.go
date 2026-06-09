@@ -35,8 +35,8 @@ func (o *Operation) Attrs() []slog.Attr {
 }
 
 type RootConfig struct {
-	lifecycleObservers []LifecycleObserver
-	errorObservers     []ErrorObserver
+	LifecycleObservers []LifecycleObserver
+	ErrorObservers     []ErrorObserver
 }
 
 type Option func(*RootConfig)

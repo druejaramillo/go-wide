@@ -9,7 +9,7 @@ type LifecycleObserver interface {
 
 func WithLifecycleObserver(o LifecycleObserver) Option {
 	return func(rc *RootConfig) {
-		rc.lifecycleObservers = append(rc.lifecycleObservers, o)
+		rc.LifecycleObservers = append(rc.LifecycleObservers, o)
 	}
 }
 
@@ -19,6 +19,6 @@ type ErrorObserver interface {
 
 func WithErrorObserver(o ErrorObserver) Option {
 	return func(rc *RootConfig) {
-		rc.errorObservers = append(rc.errorObservers, o)
+		rc.ErrorObservers = append(rc.ErrorObservers, o)
 	}
 }

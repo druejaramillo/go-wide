@@ -13,7 +13,7 @@ func Error(ctx context.Context, err error) (context.Context, error) {
 	if err == nil {
 		return ctx, nil
 	}
-	for _, o := range operation.rootConfig.errorObservers {
+	for _, o := range operation.rootConfig.ErrorObservers {
 		o.OnError(ctx, operation, err)
 	}
 	currentErr := GetErrorFromContext(ctx)

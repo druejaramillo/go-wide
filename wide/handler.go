@@ -11,11 +11,13 @@ import (
 	"github.com/druejaramillo/go-wide/ops"
 )
 
+type Option struct{}
+
 type Handler struct {
 	handler slog.Handler
 }
 
-func NewHandler(h slog.Handler) *Handler {
+func NewHandler(h slog.Handler, opts ...Option) *Handler {
 	return &Handler{handler: h}
 }
 
@@ -37,5 +39,7 @@ func (h *Handler) WithGroup(name string) slog.Handler {
 
 func (h *Handler) RootOption() ops.Option {
 	return func(rc *ops.RootConfig) {
+		rc.LifecycleObservers = make([]ops.LifecycleObserver, 0)
+		rc.ErrorObservers = make([]ops.ErrorObserver, 0)
 	}
 }
