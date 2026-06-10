@@ -313,6 +313,80 @@ func TestAttachedRootPassthroughEmitsImmediateOrdinaryRecordsForChildOperations(
 	})
 }
 
+func TestAggregateRootEmissionForSingleOperation(t *testing.T) {
+	downstream := newDisabledRecordingHandler()
+	handler := NewHandler(downstream, WithAggregate())
+
+	rootCtx, err := ops.StartRoot(context.Background(), "root", handler.RootOption())
+	if err != nil {
+		t.Fatalf("StartRoot() error = %v", err)
+	}
+	if err := ops.WithAttrs(rootCtx,
+		slog.String("request_id", "req-123"),
+		slog.String("tenant", "acme"),
+	); err != nil {
+		t.Fatalf("WithAttrs() error = %v", err)
+	}
+
+	logger := slog.New(handler)
+	logger.InfoContext(rootCtx, "root log", slog.Int("attempt", 1))
+
+	t.Run("buffers logs until root end", func(t *testing.T) {
+		if got := downstream.Records(); len(got) != 0 {
+			t.Fatalf("record count before End(root) = %d, want 0", len(got))
+		}
+	})
+
+	_, err = ops.End(rootCtx)
+	if err != nil {
+		t.Fatalf("End(root) error = %v", err)
+	}
+
+	records := downstream.Records()
+	if len(records) != 1 {
+		t.Fatalf("record count after End(root) = %d, want 1", len(records))
+	}
+
+	record := records[0]
+	attrs := recordAttrs(record)
+
+	t.Run("emits exactly one finalized slog record on root end", func(t *testing.T) {
+		if len(records) != 1 {
+			t.Fatalf("record count = %d, want 1", len(records))
+		}
+	})
+
+	t.Run("includes reserved root wide-event attrs", func(t *testing.T) {
+		if attrs["request_id"] != "req-123" {
+			t.Fatalf("request_id = %v, want %q", attrs["request_id"], "req-123")
+		}
+		if attrs["tenant"] != "acme" {
+			t.Fatalf("tenant = %v, want %q", attrs["tenant"], "acme")
+		}
+		if attrs["version"] != int64(1) {
+			t.Fatalf("version = %v, want %v", attrs["version"], 1)
+		}
+		if _, ok := attrs["status"]; !ok {
+			t.Fatalf("status attr missing from finalized record: %v", attrs)
+		}
+		if _, ok := attrs["start"]; !ok {
+			t.Fatalf("start attr missing from finalized record: %v", attrs)
+		}
+		if _, ok := attrs["end"]; !ok {
+			t.Fatalf("end attr missing from finalized record: %v", attrs)
+		}
+		if _, ok := attrs["logs"]; !ok {
+			t.Fatalf("logs attr missing from finalized record: %v", attrs)
+		}
+	})
+
+	t.Run("bypasses ordinary downstream filtering during final emission", func(t *testing.T) {
+		if len(records) != 1 {
+			t.Fatalf("record count = %d, want 1", len(records))
+		}
+	})
+}
+
 type recordingHandler struct {
 	mu      sync.Mutex
 	records []slog.Record
@@ -341,6 +415,20 @@ func (h *recordingHandler) Records() []slog.Record {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return append([]slog.Record(nil), h.records...)
+}
+
+type disabledRecordingHandler struct {
+	*recordingHandler
+}
+
+func newDisabledRecordingHandler() *disabledRecordingHandler {
+	return &disabledRecordingHandler{
+		recordingHandler: &recordingHandler{},
+	}
+}
+
+func (h *disabledRecordingHandler) Enabled(context.Context, slog.Level) bool {
+	return false
 }
 
 type recordingHandlerWithAttrs struct {
