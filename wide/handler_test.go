@@ -387,6 +387,63 @@ func TestAggregateRootEmissionForSingleOperation(t *testing.T) {
 	})
 }
 
+func TestAggregateRootEmissionCapturesLoggerDerivedLogContext(t *testing.T) {
+	downstream := &recordingHandler{}
+	handler := NewHandler(downstream, WithAggregate())
+
+	rootCtx, err := ops.StartRoot(context.Background(), "root", handler.RootOption())
+	if err != nil {
+		t.Fatalf("StartRoot() error = %v", err)
+	}
+
+	logger := slog.New(handler).WithGroup("request").With("id", "req-123")
+	logger.InfoContext(rootCtx, "root log", slog.Int("attempt", 1))
+
+	_, err = ops.End(rootCtx)
+	if err != nil {
+		t.Fatalf("End(root) error = %v", err)
+	}
+
+	records := downstream.Records()
+	if len(records) != 1 {
+		t.Fatalf("record count after End(root) = %d, want 1", len(records))
+	}
+
+	attrs := recordAttrTree(records[0])
+	logs, ok := attrs["logs"].(map[string]any)
+	if !ok {
+		t.Fatalf("logs = %T, want map[string]any", attrs["logs"])
+	}
+
+	entry, ok := logs["0"].(map[string]any)
+	if !ok {
+		t.Fatalf("logs[0] = %T, want map[string]any", logs["0"])
+	}
+
+	t.Run("preserves the collected log message", func(t *testing.T) {
+		if entry["message"] != "root log" {
+			t.Fatalf("logs[0].message = %v, want %q", entry["message"], "root log")
+		}
+	})
+
+	t.Run("preserves record attrs inside the collected log entry", func(t *testing.T) {
+		if entry["attempt"] != int64(1) {
+			t.Fatalf("logs[0].attempt = %v, want %v", entry["attempt"], 1)
+		}
+	})
+
+	t.Run("preserves logger-derived grouped attrs inside the collected log entry", func(t *testing.T) {
+		request, ok := entry["request"].(map[string]any)
+		if !ok {
+			t.Fatalf("logs[0].request = %T, want map[string]any", entry["request"])
+		}
+
+		if request["id"] != "req-123" {
+			t.Fatalf("logs[0].request.id = %v, want %q", request["id"], "req-123")
+		}
+	})
+}
+
 type recordingHandler struct {
 	mu      sync.Mutex
 	records []slog.Record
@@ -490,6 +547,28 @@ func recordAttrs(record slog.Record) map[string]any {
 		attrs[attr.Key] = attr.Value.Any()
 		return true
 	})
+	return attrs
+}
+
+func recordAttrTree(record slog.Record) map[string]any {
+	attrs := map[string]any{}
+	record.Attrs(func(attr slog.Attr) bool {
+		attrs[attr.Key] = attrTreeValue(attr.Value)
+		return true
+	})
+	return attrs
+}
+
+func attrTreeValue(value slog.Value) any {
+	value = value.Resolve()
+	if value.Kind() != slog.KindGroup {
+		return value.Any()
+	}
+
+	attrs := map[string]any{}
+	for _, attr := range value.Group() {
+		attrs[attr.Key] = attrTreeValue(attr.Value)
+	}
 	return attrs
 }
 
