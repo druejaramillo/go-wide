@@ -138,21 +138,6 @@ func cloneAttrs(attrs []slog.Attr) []slog.Attr {
 	return out
 }
 
-type noopLifecycleObserver struct{}
-
-func (o noopLifecycleObserver) OnStart(ctx context.Context, op *ops.Operation) context.Context {
-	return ctx
-}
-
-func (o noopLifecycleObserver) OnEnd(ctx context.Context, op *ops.Operation) context.Context {
-	return ctx
-}
-
-type noopErrorObserver struct{}
-
-func (o noopErrorObserver) OnError(ctx context.Context, op *ops.Operation, err error) {
-}
-
 func (h *Handler) RootOption() ops.Option {
 	if h.config.strategy != strategyAggregate {
 		return func(rc *ops.RootConfig) {
@@ -166,6 +151,21 @@ func (h *Handler) RootOption() ops.Option {
 		rc.LifecycleObservers = append(rc.LifecycleObservers, observer)
 		rc.ErrorObservers = append(rc.ErrorObservers, observer)
 	}
+}
+
+type noopLifecycleObserver struct{}
+
+func (o noopLifecycleObserver) OnStart(ctx context.Context, op *ops.Operation) context.Context {
+	return ctx
+}
+
+func (o noopLifecycleObserver) OnEnd(ctx context.Context, op *ops.Operation) context.Context {
+	return ctx
+}
+
+type noopErrorObserver struct{}
+
+func (o noopErrorObserver) OnError(ctx context.Context, op *ops.Operation, err error) {
 }
 
 type contextKey string
