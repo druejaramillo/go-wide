@@ -67,8 +67,10 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 	if h.config.strategy == strategyPassthrough {
 		return h.handler.Handle(ctx, r)
 	}
+
 	state := aggregateStateFromContext(ctx)
-	if state == nil {
+	node := aggregateNodeFromContext(ctx)
+	if state == nil || node == nil {
 		return h.handler.Handle(ctx, r)
 	}
 
@@ -81,7 +83,7 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 		)...,
 	)
 
-	state.collect(effectiveRecord)
+	state.collect(node, effectiveRecord)
 	return nil
 }
 
@@ -170,13 +172,23 @@ func (o noopErrorObserver) OnError(ctx context.Context, op *ops.Operation, err e
 
 type contextKey string
 
-const aggregateStateKey contextKey = "go-wide.wide.aggregate_state"
+const (
+	aggregateStateKey contextKey = "go-wide.wide.aggregate_state"
+	aggregateNodeKey  contextKey = "go-wide.wide.aggregate_node"
+)
 
 type aggregateState struct {
 	mu     sync.Mutex
 	start  time.Time
 	status string
-	logs   []collectedRecord
+	root   *aggregateNode
+}
+
+type aggregateNode struct {
+	name     string
+	attrs    []slog.Attr
+	logs     []collectedRecord
+	children map[string]*aggregateNode
 }
 
 type collectedRecord struct {
@@ -194,10 +206,19 @@ func aggregateStateFromContext(ctx context.Context) *aggregateState {
 	return state
 }
 
-func (s *aggregateState) collect(r slog.Record) {
+func aggregateNodeFromContext(ctx context.Context) *aggregateNode {
+	state, ok := ctx.Value(aggregateNodeKey).(*aggregateNode)
+	if state == nil || !ok {
+		return nil
+	}
+	return state
+}
+
+func (s *aggregateState) collect(node *aggregateNode, r slog.Record) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.logs = append(s.logs, collectedRecord{
+
+	node.logs = append(node.logs, collectedRecord{
 		time:    r.Time,
 		level:   r.Level,
 		message: r.Message,
@@ -220,20 +241,51 @@ func (s *aggregateState) finalRecord(op *ops.Operation) slog.Record {
 
 	end := time.Now()
 	record := slog.NewRecord(end, slog.LevelInfo, op.Op, 0)
-	record.AddAttrs(op.Attrs()...)
+
+	record.AddAttrs(s.root.attrs...)
 	record.AddAttrs(
 		slog.Int("version", 1),
 		slog.String("status", s.status),
 		slog.Time("start", s.start),
 		slog.Time("end", end),
-		slog.GroupAttrs("logs", s.logAttrs()...),
 	)
+
+	for _, attr := range renderChildGroups(s.root) {
+		record.AddAttrs(attr)
+	}
+
+	if len(s.root.logs) > 0 {
+		record.AddAttrs(slog.GroupAttrs("logs", logAttrs(s.root.logs)...))
+	}
+
 	return record
 }
 
-func (s *aggregateState) logAttrs() []slog.Attr {
-	attrs := make([]slog.Attr, len(s.logs))
-	for i, entry := range s.logs {
+func renderChildGroups(node *aggregateNode) []slog.Attr {
+	var out []slog.Attr
+	for name, child := range node.children {
+		out = append(out, slog.GroupAttrs(name, renderNodeBody(child)...))
+	}
+	return out
+}
+
+func renderNodeBody(node *aggregateNode) []slog.Attr {
+	out := cloneAttrs(node.attrs)
+
+	for _, attr := range renderChildGroups(node) {
+		out = append(out, attr)
+	}
+
+	if len(node.logs) > 0 {
+		out = append(out, slog.GroupAttrs("logs", logAttrs(node.logs)...))
+	}
+
+	return out
+}
+
+func logAttrs(entries []collectedRecord) []slog.Attr {
+	attrs := make([]slog.Attr, len(entries))
+	for i, entry := range entries {
 		numAttrs := len(entry.attrs) + 3
 		entryAttrs := make([]slog.Attr, numAttrs)
 		entryAttrs[0] = slog.String("message", entry.message)
@@ -256,22 +308,66 @@ type aggregateObserver struct {
 }
 
 func (o *aggregateObserver) OnStart(ctx context.Context, op *ops.Operation) context.Context {
-	state := &aggregateState{
-		start:  time.Now(),
-		status: "ok",
+	state := aggregateStateFromContext(ctx)
+	if state == nil {
+		root := &aggregateNode{
+			name:     op.Op,
+			children: map[string]*aggregateNode{},
+		}
+		state := &aggregateState{
+			start:  time.Now(),
+			status: "ok",
+			root:   root,
+		}
+		ctx = context.WithValue(ctx, aggregateStateKey, state)
+		return context.WithValue(ctx, aggregateNodeKey, root)
 	}
-	return context.WithValue(ctx, aggregateStateKey, state)
+	parent := aggregateNodeFromContext(ctx)
+	child := state.childNode(parent, op.Op)
+	return context.WithValue(ctx, aggregateNodeKey, child)
+}
+
+func (s *aggregateState) childNode(parent *aggregateNode, name string) *aggregateNode {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if parent.children == nil {
+		parent.children = map[string]*aggregateNode{}
+	}
+
+	child := parent.children[name]
+	if child == nil {
+		child = &aggregateNode{
+			name:     name,
+			children: map[string]*aggregateNode{},
+		}
+		parent.children[name] = child
+	}
+	return child
 }
 
 func (o *aggregateObserver) OnEnd(ctx context.Context, op *ops.Operation) context.Context {
 	state := aggregateStateFromContext(ctx)
-	if state == nil {
+	node := aggregateNodeFromContext(ctx)
+	if state == nil || node == nil {
+		return ctx
+	}
+
+	state.setNodeAttrs(node, op.Attrs())
+
+	if len(op.Ops()) != 1 {
 		return ctx
 	}
 
 	record := state.finalRecord(op)
 	_ = o.handler.Handle(ctx, record)
 	return ctx
+}
+
+func (s *aggregateState) setNodeAttrs(node *aggregateNode, attrs []slog.Attr) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	node.attrs = cloneAttrs(attrs)
 }
 
 func (o *aggregateObserver) OnError(ctx context.Context, op *ops.Operation, err error) {

@@ -387,6 +387,56 @@ func TestAggregateRootEmissionForSingleOperation(t *testing.T) {
 	})
 }
 
+func TestAggregateRootEmissionIncludesChildOperationAttrsAsDirectGroups(t *testing.T) {
+	downstream := &recordingHandler{}
+	handler := NewHandler(downstream, WithAggregate())
+
+	rootCtx, err := ops.StartRoot(context.Background(), "root", handler.RootOption())
+	if err != nil {
+		t.Fatalf("StartRoot() error = %v", err)
+	}
+
+	if err := ops.WithAttrs(rootCtx, slog.String("request_id", "req-123")); err != nil {
+		t.Fatalf("WithAttrs(root) error = %v", err)
+	}
+
+	childCtx, err := ops.Start(rootCtx, "child")
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	if err := ops.WithAttrs(childCtx, slog.String("step", "charge-card")); err != nil {
+		t.Fatalf("WithAttrs(child) error = %v", err)
+	}
+
+	if _, err := ops.End(childCtx); err != nil {
+		t.Fatalf("End(child) error = %v", err)
+	}
+
+	if _, err := ops.End(rootCtx); err != nil {
+		t.Fatalf("End(root) error = %v", err)
+	}
+
+	records := downstream.Records()
+	if len(records) != 1 {
+		t.Fatalf("record count after End(root) = %d, want 1", len(records))
+	}
+
+	attrs := recordAttrTree(records[0])
+	child, ok := attrs["child"].(map[string]any)
+	if !ok {
+		t.Fatalf("child = %T, want map[string]any", attrs["child"])
+	}
+
+	if attrs["request_id"] != "req-123" {
+		t.Fatalf("request_id = %v, want %q", attrs["request_id"], "req-123")
+	}
+
+	if child["step"] != "charge-card" {
+		t.Fatalf("child.step = %v, want %q", child["step"], "charge-card")
+	}
+}
+
 func TestAggregateRootEmissionPreservesLoggerDerivedGroupedAttrs(t *testing.T) {
 	downstream := &recordingHandler{}
 	handler := NewHandler(downstream, WithAggregate())
