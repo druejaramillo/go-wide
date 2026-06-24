@@ -36,6 +36,8 @@ func WithAggregate() Option {
 type Handler struct {
 	handler slog.Handler
 	config  *handlerConfig
+	prefix  []slog.Attr
+	groups  []string
 }
 
 func NewHandler(h slog.Handler, opts ...Option) *Handler {
@@ -69,7 +71,17 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 	if state == nil {
 		return h.handler.Handle(ctx, r)
 	}
-	state.collect(r)
+
+	effectiveRecord := slog.NewRecord(r.Time, r.Level, r.Message, r.PC)
+	effectiveRecord.AddAttrs(
+		mergeAttrsIntoGroupPath(
+			cloneAttrs(h.prefix),
+			h.groups,
+			attrsFromRecord(r),
+		)...,
+	)
+
+	state.collect(effectiveRecord)
 	return nil
 }
 
@@ -77,6 +89,8 @@ func (h *Handler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &Handler{
 		handler: h.handler.WithAttrs(attrs),
 		config:  h.config,
+		prefix:  mergeAttrsIntoGroupPath(cloneAttrs(h.prefix), h.groups, cloneAttrs(attrs)),
+		groups:  append([]string(nil), h.groups...),
 	}
 }
 
@@ -84,7 +98,44 @@ func (h *Handler) WithGroup(name string) slog.Handler {
 	return &Handler{
 		handler: h.handler.WithGroup(name),
 		config:  h.config,
+		prefix:  cloneAttrs(h.prefix),
+		groups:  append(append([]string(nil), h.groups...), name),
 	}
+}
+
+func mergeAttrsIntoGroupPath(base []slog.Attr, path []string, add []slog.Attr) []slog.Attr {
+	if len(path) == 0 {
+		return append(base, add...)
+	}
+
+	group := path[0]
+
+	for i, attr := range base {
+		if attr.Key != group {
+			continue
+		}
+
+		v := attr.Value.Resolve()
+		if v.Kind() != slog.KindGroup {
+			continue
+		}
+
+		merged := mergeAttrsIntoGroupPath(cloneAttrs(v.Group()), path[1:], add)
+		base[i] = slog.GroupAttrs(group, merged...)
+		return base
+	}
+
+	nested := mergeAttrsIntoGroupPath(nil, path[1:], add)
+	return append(base, slog.GroupAttrs(group, nested...))
+}
+
+func cloneAttrs(attrs []slog.Attr) []slog.Attr {
+	if len(attrs) == 0 {
+		return nil
+	}
+	out := make([]slog.Attr, len(attrs))
+	copy(out, attrs)
+	return out
 }
 
 type noopLifecycleObserver struct{}

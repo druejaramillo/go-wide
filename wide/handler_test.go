@@ -387,7 +387,7 @@ func TestAggregateRootEmissionForSingleOperation(t *testing.T) {
 	})
 }
 
-func TestAggregateRootEmissionCapturesLoggerDerivedLogContext(t *testing.T) {
+func TestAggregateRootEmissionPreservesLoggerDerivedGroupedAttrs(t *testing.T) {
 	downstream := &recordingHandler{}
 	handler := NewHandler(downstream, WithAggregate())
 
@@ -420,28 +420,86 @@ func TestAggregateRootEmissionCapturesLoggerDerivedLogContext(t *testing.T) {
 		t.Fatalf("logs[0] = %T, want map[string]any", logs["0"])
 	}
 
-	t.Run("preserves the collected log message", func(t *testing.T) {
-		if entry["message"] != "root log" {
-			t.Fatalf("logs[0].message = %v, want %q", entry["message"], "root log")
-		}
-	})
+	request, ok := entry["request"].(map[string]any)
+	if !ok {
+		t.Fatalf("logs[0].request = %T, want map[string]any", entry["request"])
+	}
 
-	t.Run("preserves record attrs inside the collected log entry", func(t *testing.T) {
-		if entry["attempt"] != int64(1) {
-			t.Fatalf("logs[0].attempt = %v, want %v", entry["attempt"], 1)
-		}
-	})
+	if request["id"] != "req-123" {
+		t.Fatalf("logs[0].request.id = %v, want %q", request["id"], "req-123")
+	}
+}
 
-	t.Run("preserves logger-derived grouped attrs inside the collected log entry", func(t *testing.T) {
-		request, ok := entry["request"].(map[string]any)
-		if !ok {
-			t.Fatalf("logs[0].request = %T, want map[string]any", entry["request"])
-		}
+func TestAggregateRootEmissionMarksFinalStatusErrorAfterReportedError(t *testing.T) {
+	downstream := &recordingHandler{}
+	handler := NewHandler(downstream, WithAggregate())
 
-		if request["id"] != "req-123" {
-			t.Fatalf("logs[0].request.id = %v, want %q", request["id"], "req-123")
-		}
-	})
+	rootCtx, err := ops.StartRoot(context.Background(), "root", handler.RootOption())
+	if err != nil {
+		t.Fatalf("StartRoot() error = %v", err)
+	}
+
+	rootCtx, err = ops.Error(rootCtx, context.Canceled)
+	if err != nil {
+		t.Fatalf("Error() error = %v", err)
+	}
+
+	_, err = ops.End(rootCtx)
+	if err != nil {
+		t.Fatalf("End(root) error = %v", err)
+	}
+
+	records := downstream.Records()
+	if len(records) != 1 {
+		t.Fatalf("record count after End(root) = %d, want 1", len(records))
+	}
+
+	attrs := recordAttrs(records[0])
+	if attrs["status"] != "error" {
+		t.Fatalf("status = %v, want %q", attrs["status"], "error")
+	}
+}
+
+func TestAggregateRootEmissionSerializesAsOrdinaryJSONRecord(t *testing.T) {
+	var output bytes.Buffer
+	handler := NewHandler(slog.NewJSONHandler(&output, nil), WithAggregate())
+
+	rootCtx, err := ops.StartRoot(context.Background(), "root", handler.RootOption())
+	if err != nil {
+		t.Fatalf("StartRoot() error = %v", err)
+	}
+
+	if err := ops.WithAttrs(rootCtx, slog.String("request_id", "req-123")); err != nil {
+		t.Fatalf("WithAttrs() error = %v", err)
+	}
+
+	slog.New(handler).InfoContext(rootCtx, "root log")
+
+	_, err = ops.End(rootCtx)
+	if err != nil {
+		t.Fatalf("End(root) error = %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v; output = %q", err, output.String())
+	}
+
+	if got["msg"] != "root" {
+		t.Fatalf("msg = %v, want %q", got["msg"], "root")
+	}
+
+	if got["level"] != "INFO" {
+		t.Fatalf("level = %v, want %q", got["level"], "INFO")
+	}
+
+	if got["request_id"] != "req-123" {
+		t.Fatalf("request_id = %v, want %q", got["request_id"], "req-123")
+	}
+
+	if _, ok := got["logs"]; !ok {
+		t.Fatalf("logs missing from serialized aggregate record: %v", got)
+	}
 }
 
 type recordingHandler struct {
