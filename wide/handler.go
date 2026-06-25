@@ -198,6 +198,8 @@ type aggregateNode struct {
 	variants map[string][]slog.Value
 	logs     []collectedRecord
 	children map[string]*aggregateNode
+	status   string
+	errMsg   string
 }
 
 type collectedRecord struct {
@@ -561,6 +563,7 @@ func (s *aggregateState) childNode(parent *aggregateNode, name string) *aggregat
 		child = &aggregateNode{
 			name:     name,
 			count:    1,
+			status:   "ok",
 			variants: map[string][]slog.Value{},
 			children: map[string]*aggregateNode{},
 		}
@@ -569,7 +572,17 @@ func (s *aggregateState) childNode(parent *aggregateNode, name string) *aggregat
 	}
 
 	child.count++
+	child.status = "ok"
+	child.errMsg = ""
 	return child
+}
+
+func (s *aggregateState) markNodeError(node *aggregateNode, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	node.status = "error"
+	node.errMsg = err.Error()
 }
 
 func (o *aggregateObserver) OnEnd(ctx context.Context, op *ops.Operation) context.Context {
@@ -594,7 +607,16 @@ func (s *aggregateState) setNodeAttrs(node *aggregateNode, attrs []slog.Attr) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	next := flattenAttrs(attrs)
+	allAttrs := cloneAttrs(attrs)
+
+	if node != s.root {
+		allAttrs = append(allAttrs, slog.String("status", node.status))
+		if node.errMsg != "" {
+			allAttrs = append(allAttrs, slog.String("error", node.errMsg))
+		}
+	}
+
+	next := flattenAttrs(allAttrs)
 
 	if node.shared == nil {
 		node.shared = next
@@ -648,4 +670,11 @@ func (o *aggregateObserver) OnError(ctx context.Context, op *ops.Operation, err 
 	}
 
 	state.markError()
+
+	node := aggregateNodeFromContext(ctx)
+	if node == nil {
+		return
+	}
+
+	state.markNodeError(node, err)
 }

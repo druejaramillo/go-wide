@@ -763,6 +763,96 @@ func TestAggregateRootEmissionMergesSameNamedChildOperationsByStructure(t *testi
 	}
 }
 
+func TestAggregateRootEmissionPreservesDivergentErrorOutcomesForSameNamedChildren(t *testing.T) {
+	downstream := &recordingHandler{}
+	handler := NewHandler(downstream, WithAggregate())
+
+	rootCtx, err := ops.StartRoot(context.Background(), "root", handler.RootOption())
+	if err != nil {
+		t.Fatalf("StartRoot() error = %v", err)
+	}
+
+	firstChildCtx, err := ops.Start(rootCtx, "charge")
+	if err != nil {
+		t.Fatalf("Start(first child) error = %v", err)
+	}
+	if err := ops.WithAttrs(firstChildCtx, slog.String("provider", "stripe")); err != nil {
+		t.Fatalf("WithAttrs(first child) error = %v", err)
+	}
+	if _, err := ops.End(firstChildCtx); err != nil {
+		t.Fatalf("End(first child) error = %v", err)
+	}
+
+	secondChildCtx, err := ops.Start(rootCtx, "charge")
+	if err != nil {
+		t.Fatalf("Start(second child) error = %v", err)
+	}
+	if err := ops.WithAttrs(secondChildCtx, slog.String("provider", "stripe")); err != nil {
+		t.Fatalf("WithAttrs(second child) error = %v", err)
+	}
+	secondChildCtx, err = ops.Error(secondChildCtx, context.DeadlineExceeded)
+	if err != nil {
+		t.Fatalf("Error(second child) error = %v", err)
+	}
+	if _, err := ops.End(secondChildCtx); err != nil {
+		t.Fatalf("End(second child) error = %v", err)
+	}
+
+	if _, err := ops.End(rootCtx); err != nil {
+		t.Fatalf("End(root) error = %v", err)
+	}
+
+	records := downstream.Records()
+	if len(records) != 1 {
+		t.Fatalf("record count after End(root) = %d, want 1", len(records))
+	}
+
+	attrs := recordAttrTree(records[0])
+	child, ok := attrs["charge"].(map[string]any)
+	if !ok {
+		t.Fatalf("charge = %T, want map[string]any", attrs["charge"])
+	}
+
+	if child["count"] != int64(2) {
+		t.Fatalf("charge.count = %v, want %v", child["count"], 2)
+	}
+
+	if child["provider"] != "stripe" {
+		t.Fatalf("charge.provider = %v, want %q", child["provider"], "stripe")
+	}
+
+	if _, ok := child["status"]; ok {
+		t.Fatalf("charge.status should be summarized under variants, child = %v", child)
+	}
+
+	if _, ok := child["error"]; ok {
+		t.Fatalf("charge.error should be summarized under variants, child = %v", child)
+	}
+
+	variants, ok := child["variants"].(map[string]any)
+	if !ok {
+		t.Fatalf("charge.variants = %T, want map[string]any", child["variants"])
+	}
+
+	statuses, ok := variants["status"].([]any)
+	if !ok {
+		t.Fatalf("charge.variants.status = %T, want []any", variants["status"])
+	}
+
+	if !reflect.DeepEqual(statuses, []any{"ok", "error"}) {
+		t.Fatalf("charge.variants.status = %v, want %v", statuses, []any{"ok", "error"})
+	}
+
+	errors, ok := variants["error"].([]any)
+	if !ok {
+		t.Fatalf("charge.variants.error = %T, want []any", variants["error"])
+	}
+
+	if !reflect.DeepEqual(errors, []any{context.DeadlineExceeded.Error()}) {
+		t.Fatalf("charge.variants.error = %v, want %v", errors, []any{context.DeadlineExceeded.Error()})
+	}
+}
+
 func TestAggregateRootEmissionMarksFinalStatusErrorAfterReportedError(t *testing.T) {
 	downstream := &recordingHandler{}
 	handler := NewHandler(downstream, WithAggregate())
