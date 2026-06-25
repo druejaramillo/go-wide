@@ -7,6 +7,7 @@ package wide
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"reflect"
 	"sort"
 	"strings"
@@ -192,7 +193,9 @@ type aggregateState struct {
 
 type aggregateNode struct {
 	name     string
-	attrs    []slog.Attr
+	count    int
+	shared   map[string]slog.Value
+	variants map[string][]slog.Value
 	logs     []collectedRecord
 	children map[string]*aggregateNode
 }
@@ -261,7 +264,13 @@ func (s *aggregateState) finalRecord(op *ops.Operation) slog.Record {
 	end := time.Now()
 	record := slog.NewRecord(end, slog.LevelInfo, op.Op, 0)
 
-	record.AddAttrs(s.root.attrs...)
+	if len(s.root.shared) > 0 {
+		record.AddAttrs(renderNestedValueMap(s.root.shared)...)
+	}
+	if len(s.root.variants) > 0 {
+		record.AddAttrs(slog.GroupAttrs("variants", renderNestedVariants(s.root.variants)...))
+	}
+
 	record.AddAttrs(
 		slog.Int("version", 1),
 		slog.String("status", s.status),
@@ -289,7 +298,19 @@ func renderChildGroups(node *aggregateNode) []slog.Attr {
 }
 
 func renderNodeBody(node *aggregateNode) []slog.Attr {
-	out := cloneAttrs(node.attrs)
+	var out []slog.Attr
+
+	if node.count > 1 {
+		out = append(out, slog.Int("count", node.count))
+	}
+
+	if len(node.shared) > 0 {
+		out = append(out, renderNestedValueMap(node.shared)...)
+	}
+
+	if len(node.variants) > 0 {
+		out = append(out, slog.GroupAttrs("variants", renderNestedVariants(node.variants)...))
+	}
 
 	out = append(out, renderChildGroups(node)...)
 
@@ -383,40 +404,12 @@ func (b *logBucket) merge(entry collectedRecord) {
 		return
 	}
 
-	for path, sharedValue := range cloneValueMap(b.shared) {
-		nextValue, ok := next[path]
-		if ok && slogValuesEqual(sharedValue, nextValue) {
-			delete(next, path)
-			continue
-		}
-
-		b.variants[path] = appendUniqueValue(b.variants[path], sharedValue)
-		if ok {
-			b.variants[path] = appendUniqueValue(b.variants[path], nextValue)
-			delete(next, path)
-		}
-		delete(b.shared, path)
-	}
-
-	for path, nextValue := range next {
-		if _, alreadyVariant := b.variants[path]; alreadyVariant {
-			b.variants[path] = appendUniqueValue(b.variants[path], nextValue)
-			continue
-		}
-
-		if _, stillShared := b.shared[path]; stillShared {
-			continue
-		}
-
-		b.variants[path] = appendUniqueValue(nil, nextValue)
-	}
+	mergeFlatValues(b.shared, b.variants, next)
 }
 
 func cloneValueMap(in map[string]slog.Value) map[string]slog.Value {
 	out := make(map[string]slog.Value, len(in))
-	for key, value := range in {
-		out[key] = value
-	}
+	maps.Copy(out, in)
 	return out
 }
 
@@ -567,10 +560,15 @@ func (s *aggregateState) childNode(parent *aggregateNode, name string) *aggregat
 	if child == nil {
 		child = &aggregateNode{
 			name:     name,
+			count:    1,
+			variants: map[string][]slog.Value{},
 			children: map[string]*aggregateNode{},
 		}
 		parent.children[name] = child
+		return child
 	}
+
+	child.count++
 	return child
 }
 
@@ -595,7 +593,48 @@ func (o *aggregateObserver) OnEnd(ctx context.Context, op *ops.Operation) contex
 func (s *aggregateState) setNodeAttrs(node *aggregateNode, attrs []slog.Attr) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	node.attrs = cloneAttrs(attrs)
+
+	next := flattenAttrs(attrs)
+
+	if node.shared == nil {
+		node.shared = next
+		if node.variants == nil {
+			node.variants = map[string][]slog.Value{}
+		}
+		return
+	}
+
+	mergeFlatValues(node.shared, node.variants, next)
+}
+
+func mergeFlatValues(shared map[string]slog.Value, variants map[string][]slog.Value, next map[string]slog.Value) {
+	for path, sharedValue := range cloneValueMap(shared) {
+		nextValue, ok := next[path]
+		if ok && slogValuesEqual(sharedValue, nextValue) {
+			delete(next, path)
+			continue
+		}
+
+		variants[path] = appendUniqueValue(variants[path], sharedValue)
+		if ok {
+			variants[path] = appendUniqueValue(variants[path], nextValue)
+			delete(next, path)
+		}
+		delete(shared, path)
+	}
+
+	for path, nextValue := range next {
+		if _, alreadyVariant := variants[path]; alreadyVariant {
+			variants[path] = appendUniqueValue(variants[path], nextValue)
+			continue
+		}
+
+		if _, stillShared := shared[path]; stillShared {
+			continue
+		}
+
+		variants[path] = appendUniqueValue(nil, nextValue)
+	}
 }
 
 func (o *aggregateObserver) OnError(ctx context.Context, op *ops.Operation, err error) {

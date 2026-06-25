@@ -684,6 +684,85 @@ func TestAggregateRootEmissionMergesRepeatedLogsByStructure(t *testing.T) {
 	}
 }
 
+func TestAggregateRootEmissionMergesSameNamedChildOperationsByStructure(t *testing.T) {
+	downstream := &recordingHandler{}
+	handler := NewHandler(downstream, WithAggregate())
+
+	rootCtx, err := ops.StartRoot(context.Background(), "root", handler.RootOption())
+	if err != nil {
+		t.Fatalf("StartRoot() error = %v", err)
+	}
+
+	firstChildCtx, err := ops.Start(rootCtx, "charge")
+	if err != nil {
+		t.Fatalf("Start(first child) error = %v", err)
+	}
+	if err := ops.WithAttrs(firstChildCtx,
+		slog.String("provider", "stripe"),
+		slog.String("phase", "authorize"),
+	); err != nil {
+		t.Fatalf("WithAttrs(first child) error = %v", err)
+	}
+	if _, err := ops.End(firstChildCtx); err != nil {
+		t.Fatalf("End(first child) error = %v", err)
+	}
+
+	secondChildCtx, err := ops.Start(rootCtx, "charge")
+	if err != nil {
+		t.Fatalf("Start(second child) error = %v", err)
+	}
+	if err := ops.WithAttrs(secondChildCtx,
+		slog.String("provider", "stripe"),
+		slog.String("phase", "capture"),
+	); err != nil {
+		t.Fatalf("WithAttrs(second child) error = %v", err)
+	}
+	if _, err := ops.End(secondChildCtx); err != nil {
+		t.Fatalf("End(second child) error = %v", err)
+	}
+
+	if _, err := ops.End(rootCtx); err != nil {
+		t.Fatalf("End(root) error = %v", err)
+	}
+
+	records := downstream.Records()
+	if len(records) != 1 {
+		t.Fatalf("record count after End(root) = %d, want 1", len(records))
+	}
+
+	attrs := recordAttrTree(records[0])
+	child, ok := attrs["charge"].(map[string]any)
+	if !ok {
+		t.Fatalf("charge = %T, want map[string]any", attrs["charge"])
+	}
+
+	if child["count"] != int64(2) {
+		t.Fatalf("charge.count = %v, want %v", child["count"], 2)
+	}
+
+	if child["provider"] != "stripe" {
+		t.Fatalf("charge.provider = %v, want %q", child["provider"], "stripe")
+	}
+
+	if _, ok := child["phase"]; ok {
+		t.Fatalf("charge.phase should be summarized under variants, child = %v", child)
+	}
+
+	variants, ok := child["variants"].(map[string]any)
+	if !ok {
+		t.Fatalf("charge.variants = %T, want map[string]any", child["variants"])
+	}
+
+	phases, ok := variants["phase"].([]any)
+	if !ok {
+		t.Fatalf("charge.variants.phase = %T, want []any", variants["phase"])
+	}
+
+	if !reflect.DeepEqual(phases, []any{"authorize", "capture"}) {
+		t.Fatalf("charge.variants.phase = %v, want %v", phases, []any{"authorize", "capture"})
+	}
+}
+
 func TestAggregateRootEmissionMarksFinalStatusErrorAfterReportedError(t *testing.T) {
 	downstream := &recordingHandler{}
 	handler := NewHandler(downstream, WithAggregate())
