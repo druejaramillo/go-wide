@@ -34,10 +34,11 @@ func WithAggregate() Option {
 }
 
 type Handler struct {
-	handler slog.Handler
-	config  *handlerConfig
-	prefix  []slog.Attr
-	groups  []string
+	handler     slog.Handler // ordinary downstream handler
+	rootHandler slog.Handler // stable handler for root emission only
+	config      *handlerConfig
+	prefix      []slog.Attr
+	groups      []string
 }
 
 func NewHandler(h slog.Handler, opts ...Option) *Handler {
@@ -48,8 +49,9 @@ func NewHandler(h slog.Handler, opts ...Option) *Handler {
 		opt(cfg)
 	}
 	return &Handler{
-		handler: h,
-		config:  cfg,
+		handler:     h,
+		rootHandler: h,
+		config:      cfg,
 	}
 }
 
@@ -89,19 +91,21 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 
 func (h *Handler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &Handler{
-		handler: h.handler.WithAttrs(attrs),
-		config:  h.config,
-		prefix:  mergeAttrsIntoGroupPath(cloneAttrs(h.prefix), h.groups, cloneAttrs(attrs)),
-		groups:  append([]string(nil), h.groups...),
+		handler:     h.handler.WithAttrs(attrs),
+		rootHandler: h.rootHandler,
+		config:      h.config,
+		prefix:      mergeAttrsIntoGroupPath(cloneAttrs(h.prefix), h.groups, cloneAttrs(attrs)),
+		groups:      append([]string(nil), h.groups...),
 	}
 }
 
 func (h *Handler) WithGroup(name string) slog.Handler {
 	return &Handler{
-		handler: h.handler.WithGroup(name),
-		config:  h.config,
-		prefix:  cloneAttrs(h.prefix),
-		groups:  append(append([]string(nil), h.groups...), name),
+		handler:     h.handler.WithGroup(name),
+		rootHandler: h.rootHandler,
+		config:      h.config,
+		prefix:      cloneAttrs(h.prefix),
+		groups:      append(append([]string(nil), h.groups...), name),
 	}
 }
 
@@ -149,7 +153,7 @@ func (h *Handler) RootOption() ops.Option {
 	}
 
 	return func(rc *ops.RootConfig) {
-		observer := &aggregateObserver{handler: h.handler}
+		observer := &aggregateObserver{handler: h.rootHandler}
 		rc.LifecycleObservers = append(rc.LifecycleObservers, observer)
 		rc.ErrorObservers = append(rc.ErrorObservers, observer)
 	}

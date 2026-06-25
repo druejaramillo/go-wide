@@ -480,6 +480,63 @@ func TestAggregateRootEmissionPreservesLoggerDerivedGroupedAttrs(t *testing.T) {
 	}
 }
 
+func TestAggregateRootOptionFromDerivedHandlerDoesNotLeakLoggerStateIntoFinalWideEvent(t *testing.T) {
+	var output bytes.Buffer
+	derived := NewHandler(slog.NewJSONHandler(&output, nil), WithAggregate()).WithGroup("request").WithAttrs([]slog.Attr{slog.String("id", "req-123")})
+
+	attachable, ok := derived.(interface{ RootOption() ops.Option })
+	if !ok {
+		t.Fatal("derived handler does not expose RootOption()")
+	}
+
+	rootCtx, err := ops.StartRoot(context.Background(), "root", attachable.RootOption())
+	if err != nil {
+		t.Fatalf("StartRoot() error = %v", err)
+	}
+
+	if err := ops.WithAttrs(rootCtx, slog.String("tenant", "acme")); err != nil {
+		t.Fatalf("WithAttrs(root) error = %v", err)
+	}
+
+	slog.New(derived).InfoContext(rootCtx, "derived log")
+
+	if _, err := ops.End(rootCtx); err != nil {
+		t.Fatalf("End(root) error = %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v; output = %q", err, output.String())
+	}
+
+	if got["tenant"] != "acme" {
+		t.Fatalf("tenant = %v, want %q", got["tenant"], "acme")
+	}
+
+	if _, ok := got["request"]; ok {
+		t.Fatalf("unexpected top-level request group in final wide-event: %v", got)
+	}
+
+	logs, ok := got["logs"].(map[string]any)
+	if !ok {
+		t.Fatalf("logs = %T, want map[string]any", got["logs"])
+	}
+
+	entry, ok := logs["0"].(map[string]any)
+	if !ok {
+		t.Fatalf("logs[0] = %T, want map[string]any", logs["0"])
+	}
+
+	request, ok := entry["request"].(map[string]any)
+	if !ok {
+		t.Fatalf("logs[0].request = %T, want map[string]any", entry["request"])
+	}
+
+	if request["id"] != "req-123" {
+		t.Fatalf("logs[0].request.id = %v, want %q", request["id"], "req-123")
+	}
+}
+
 func TestAggregateRootEmissionMarksFinalStatusErrorAfterReportedError(t *testing.T) {
 	downstream := &recordingHandler{}
 	handler := NewHandler(downstream, WithAggregate())
