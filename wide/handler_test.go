@@ -617,6 +617,86 @@ func TestAggregateRootEmissionScopesDerivedLoggerStateToOnlyDerivedRecords(t *te
 	}
 }
 
+func TestAggregateRootEmissionMergesRepeatedLogsByStructure(t *testing.T) {
+	downstream := &recordingHandler{}
+	handler := NewHandler(downstream, WithAggregate())
+
+	rootCtx, err := ops.StartRoot(context.Background(), "root", handler.RootOption())
+	if err != nil {
+		t.Fatalf("StartRoot() error = %v", err)
+	}
+
+	logger := slog.New(handler).With("component", "billing")
+	logger.InfoContext(rootCtx, "retrying charge", slog.String("phase", "charge"), slog.Int("attempt", 1))
+	logger.InfoContext(rootCtx, "retrying charge", slog.String("phase", "charge"), slog.Int("attempt", 2))
+
+	if _, err := ops.End(rootCtx); err != nil {
+		t.Fatalf("End(root) error = %v", err)
+	}
+
+	records := downstream.Records()
+	if len(records) != 1 {
+		t.Fatalf("record count after End(root) = %d, want 1", len(records))
+	}
+
+	attrs := recordAttrTree(records[0])
+	logs, ok := attrs["logs"].(map[string]any)
+	if !ok {
+		t.Fatalf("logs = %T, want map[string]any", attrs["logs"])
+	}
+
+	if len(logs) != 1 {
+		t.Fatalf("log bucket count = %d, want 1 merged bucket; logs = %v", len(logs), logs)
+	}
+
+	bucket, ok := logs["retrying charge"].(map[string]any)
+	if !ok {
+		t.Fatalf("logs[%q] = %T, want map[string]any; logs = %v", "retrying charge", logs["retrying charge"], logs)
+	}
+
+	if bucket["message"] != "retrying charge" {
+		t.Fatalf("bucket.message = %v, want %q", bucket["message"], "retrying charge")
+	}
+
+	if bucket["level"] != "INFO" {
+		t.Fatalf("bucket.level = %v, want %q", bucket["level"], "INFO")
+	}
+
+	if bucket["count"] != int64(2) {
+		t.Fatalf("bucket.count = %v, want %v", bucket["count"], 2)
+	}
+
+	if bucket["component"] != "billing" {
+		t.Fatalf("bucket.component = %v, want %q", bucket["component"], "billing")
+	}
+
+	if bucket["phase"] != "charge" {
+		t.Fatalf("bucket.phase = %v, want %q", bucket["phase"], "charge")
+	}
+
+	if _, ok := bucket["time"]; ok {
+		t.Fatalf("bucket.time should not be present in structural summary, bucket = %v", bucket)
+	}
+
+	if _, ok := bucket["attempt"]; ok {
+		t.Fatalf("bucket.attempt should be summarized under variants, bucket = %v", bucket)
+	}
+
+	variants, ok := bucket["variants"].(map[string]any)
+	if !ok {
+		t.Fatalf("bucket.variants = %T, want map[string]any", bucket["variants"])
+	}
+
+	attempts, ok := variants["attempt"].([]any)
+	if !ok {
+		t.Fatalf("bucket.variants.attempt = %T, want []any", variants["attempt"])
+	}
+
+	if !reflect.DeepEqual(attempts, []any{int64(1), int64(2)}) {
+		t.Fatalf("bucket.variants.attempt = %v, want %v", attempts, []any{int64(1), int64(2)})
+	}
+}
+
 func TestAggregateRootEmissionMarksFinalStatusErrorAfterReportedError(t *testing.T) {
 	downstream := &recordingHandler{}
 	handler := NewHandler(downstream, WithAggregate())

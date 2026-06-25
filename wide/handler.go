@@ -6,8 +6,10 @@ package wide
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
+	"reflect"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -202,6 +204,19 @@ type collectedRecord struct {
 	attrs   []slog.Attr
 }
 
+type logIdentity struct {
+	level   slog.Level
+	message string
+	source  string
+}
+
+type logBucket struct {
+	identity logIdentity
+	count    int
+	shared   map[string]slog.Value
+	variants map[string][]slog.Value
+}
+
 func aggregateStateFromContext(ctx context.Context) *aggregateState {
 	state, ok := ctx.Value(aggregateStateKey).(*aggregateState)
 	if state == nil || !ok {
@@ -276,9 +291,7 @@ func renderChildGroups(node *aggregateNode) []slog.Attr {
 func renderNodeBody(node *aggregateNode) []slog.Attr {
 	out := cloneAttrs(node.attrs)
 
-	for _, attr := range renderChildGroups(node) {
-		out = append(out, attr)
-	}
+	out = append(out, renderChildGroups(node)...)
 
 	if len(node.logs) > 0 {
 		out = append(out, slog.GroupAttrs("logs", logAttrs(node.logs)...))
@@ -288,17 +301,228 @@ func renderNodeBody(node *aggregateNode) []slog.Attr {
 }
 
 func logAttrs(entries []collectedRecord) []slog.Attr {
-	attrs := make([]slog.Attr, len(entries))
-	for i, entry := range entries {
-		numAttrs := len(entry.attrs) + 3
-		entryAttrs := make([]slog.Attr, numAttrs)
-		entryAttrs[0] = slog.String("message", entry.message)
-		entryAttrs[1] = slog.String("level", entry.level.String())
-		entryAttrs[2] = slog.Time("time", entry.time)
-		copy(entryAttrs[3:], entry.attrs)
-		attrs[i] = slog.GroupAttrs(fmt.Sprintf("%d", i), entryAttrs...)
+	buckets := normalizeLogs(entries)
+	attrs := make([]slog.Attr, len(buckets))
+	for i, bucket := range buckets {
+		attrs[i] = slog.GroupAttrs(bucket.renderKey(), renderLogBucket(bucket)...)
 	}
 	return attrs
+}
+
+func normalizeLogs(entries []collectedRecord) []*logBucket {
+	order := make([]logIdentity, 0)
+	buckets := make(map[logIdentity]*logBucket)
+
+	for _, entry := range entries {
+		identity := identityFor(entry)
+		bucket := buckets[identity]
+		if bucket == nil {
+			bucket = &logBucket{
+				identity: identity,
+				count:    0,
+				shared:   flattenAttrs(entry.attrs),
+				variants: map[string][]slog.Value{},
+			}
+			buckets[identity] = bucket
+			order = append(order, identity)
+		}
+		bucket.merge(entry)
+	}
+
+	out := make([]*logBucket, len(order))
+	for i, identity := range order {
+		out[i] = buckets[identity]
+	}
+	return out
+}
+
+func identityFor(entry collectedRecord) logIdentity {
+	return logIdentity{
+		level:   entry.level,
+		message: entry.message,
+		source:  sourceFromAttrs(entry.attrs),
+	}
+}
+
+func sourceFromAttrs(attrs []slog.Attr) string {
+	return ""
+}
+
+func flattenAttrs(attrs []slog.Attr) map[string]slog.Value {
+	out := map[string]slog.Value{}
+	for _, attr := range attrs {
+		flattenAttrInto(out, "", attr)
+	}
+	return out
+}
+
+func flattenAttrInto(out map[string]slog.Value, prefix string, attr slog.Attr) {
+	value := attr.Value.Resolve()
+
+	key := attr.Key
+	if prefix != "" {
+		key = prefix + "." + key
+	}
+
+	if value.Kind() != slog.KindGroup {
+		out[key] = value
+		return
+	}
+
+	for _, child := range value.Group() {
+		flattenAttrInto(out, key, child)
+	}
+}
+
+func (b *logBucket) merge(entry collectedRecord) {
+	b.count++
+
+	next := flattenAttrs(entry.attrs)
+
+	if b.count == 1 {
+		return
+	}
+
+	for path, sharedValue := range cloneValueMap(b.shared) {
+		nextValue, ok := next[path]
+		if ok && slogValuesEqual(sharedValue, nextValue) {
+			delete(next, path)
+			continue
+		}
+
+		b.variants[path] = appendUniqueValue(b.variants[path], sharedValue)
+		if ok {
+			b.variants[path] = appendUniqueValue(b.variants[path], nextValue)
+			delete(next, path)
+		}
+		delete(b.shared, path)
+	}
+
+	for path, nextValue := range next {
+		if _, alreadyVariant := b.variants[path]; alreadyVariant {
+			b.variants[path] = appendUniqueValue(b.variants[path], nextValue)
+			continue
+		}
+
+		if _, stillShared := b.shared[path]; stillShared {
+			continue
+		}
+
+		b.variants[path] = appendUniqueValue(nil, nextValue)
+	}
+}
+
+func cloneValueMap(in map[string]slog.Value) map[string]slog.Value {
+	out := make(map[string]slog.Value, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
+}
+
+func appendUniqueValue(values []slog.Value, next slog.Value) []slog.Value {
+	for _, existing := range values {
+		if slogValuesEqual(existing, next) {
+			return values
+		}
+	}
+	return append(values, next)
+}
+
+func slogValuesEqual(a, b slog.Value) bool {
+	return reflect.DeepEqual(normalizeValue(a.Resolve()), normalizeValue(b.Resolve()))
+}
+
+func normalizeValue(value slog.Value) any {
+	switch value.Kind() {
+	case slog.KindGroup:
+		group := map[string]any{}
+		for _, attr := range value.Group() {
+			group[attr.Key] = normalizeValue(attr.Value)
+		}
+		return group
+	default:
+		return value.Any()
+	}
+}
+
+func renderLogBucket(bucket *logBucket) []slog.Attr {
+	attrs := []slog.Attr{
+		slog.String("message", bucket.identity.message),
+		slog.String("level", bucket.identity.level.String()),
+		slog.Int("count", bucket.count),
+	}
+
+	attrs = append(attrs, renderNestedValueMap(bucket.shared)...)
+
+	if len(bucket.variants) > 0 {
+		attrs = append(attrs, slog.GroupAttrs("variants", renderNestedVariants(bucket.variants)...))
+	}
+
+	return attrs
+}
+
+func renderNestedValueMap(flat map[string]slog.Value) []slog.Attr {
+	tree := map[string]any{}
+	for path, value := range flat {
+		insertPath(tree, path, normalizeValue(value))
+	}
+	return renderTree(tree)
+}
+
+func renderNestedVariants(flat map[string][]slog.Value) []slog.Attr {
+	tree := map[string]any{}
+	for path, values := range flat {
+		list := make([]any, len(values))
+		for i, value := range values {
+			list[i] = normalizeValue(value)
+		}
+		insertPath(tree, path, list)
+	}
+	return renderTree(tree)
+}
+
+func insertPath(tree map[string]any, path string, value any) {
+	parts := strings.Split(path, ".")
+	node := tree
+
+	for i := 0; i < len(parts)-1; i++ {
+		part := parts[i]
+
+		child, ok := node[part].(map[string]any)
+		if !ok {
+			child = map[string]any{}
+			node[part] = child
+		}
+		node = child
+	}
+
+	node[parts[len(parts)-1]] = value
+}
+
+func renderTree(tree map[string]any) []slog.Attr {
+	keys := make([]string, 0, len(tree))
+	for key := range tree {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	attrs := make([]slog.Attr, len(keys))
+	for i, key := range keys {
+		attrs[i] = renderTreeValue(key, tree[key])
+	}
+	return attrs
+}
+
+func renderTreeValue(key string, value any) slog.Attr {
+	if group, ok := value.(map[string]any); ok {
+		return slog.GroupAttrs(key, renderTree(group)...)
+	}
+	return slog.Any(key, value)
+}
+
+func (b *logBucket) renderKey() string {
+	return b.identity.message
 }
 
 func (s *aggregateState) markError() {
