@@ -537,6 +537,86 @@ func TestAggregateRootOptionFromDerivedHandlerDoesNotLeakLoggerStateIntoFinalWid
 	}
 }
 
+func TestAggregateRootEmissionScopesDerivedLoggerStateToOnlyDerivedRecords(t *testing.T) {
+	downstream := &recordingHandler{}
+	handler := NewHandler(downstream, WithAggregate())
+
+	rootCtx, err := ops.StartRoot(context.Background(), "root", handler.RootOption())
+	if err != nil {
+		t.Fatalf("StartRoot() error = %v", err)
+	}
+
+	childCtx, err := ops.Start(rootCtx, "child")
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	if err := ops.WithAttrs(childCtx, slog.String("step", "charge-card")); err != nil {
+		t.Fatalf("WithAttrs(child) error = %v", err)
+	}
+
+	base := slog.New(handler)
+	derived := base.WithGroup("request").With("id", "req-123")
+
+	derived.InfoContext(childCtx, "derived log")
+	base.InfoContext(childCtx, "base log")
+
+	if _, err := ops.End(childCtx); err != nil {
+		t.Fatalf("End(child) error = %v", err)
+	}
+
+	if _, err := ops.End(rootCtx); err != nil {
+		t.Fatalf("End(root) error = %v", err)
+	}
+
+	records := downstream.Records()
+	if len(records) != 1 {
+		t.Fatalf("record count after End(root) = %d, want 1", len(records))
+	}
+
+	attrs := recordAttrTree(records[0])
+	child, ok := attrs["child"].(map[string]any)
+	if !ok {
+		t.Fatalf("child = %T, want map[string]any", attrs["child"])
+	}
+
+	if child["step"] != "charge-card" {
+		t.Fatalf("child.step = %v, want %q", child["step"], "charge-card")
+	}
+
+	if _, ok := child["request"]; ok {
+		t.Fatalf("unexpected request group written into child operation attrs: %v", child)
+	}
+
+	logs, ok := child["logs"].(map[string]any)
+	if !ok {
+		t.Fatalf("child.logs = %T, want map[string]any", child["logs"])
+	}
+
+	derivedEntry, ok := logs["0"].(map[string]any)
+	if !ok {
+		t.Fatalf("child.logs[0] = %T, want map[string]any", logs["0"])
+	}
+
+	baseEntry, ok := logs["1"].(map[string]any)
+	if !ok {
+		t.Fatalf("child.logs[1] = %T, want map[string]any", logs["1"])
+	}
+
+	request, ok := derivedEntry["request"].(map[string]any)
+	if !ok {
+		t.Fatalf("child.logs[0].request = %T, want map[string]any", derivedEntry["request"])
+	}
+
+	if request["id"] != "req-123" {
+		t.Fatalf("child.logs[0].request.id = %v, want %q", request["id"], "req-123")
+	}
+
+	if _, ok := baseEntry["request"]; ok {
+		t.Fatalf("unexpected request group on base logger entry: %v", baseEntry)
+	}
+}
+
 func TestAggregateRootEmissionMarksFinalStatusErrorAfterReportedError(t *testing.T) {
 	downstream := &recordingHandler{}
 	handler := NewHandler(downstream, WithAggregate())
