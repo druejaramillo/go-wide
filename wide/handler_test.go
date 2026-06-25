@@ -465,18 +465,15 @@ func TestAggregateRootEmissionPreservesLoggerDerivedGroupedAttrs(t *testing.T) {
 		t.Fatalf("logs = %T, want map[string]any", attrs["logs"])
 	}
 
-	entry, ok := logs["0"].(map[string]any)
-	if !ok {
-		t.Fatalf("logs[0] = %T, want map[string]any", logs["0"])
-	}
+	entry := logBucketByMessage(t, logs, "root log")
 
 	request, ok := entry["request"].(map[string]any)
 	if !ok {
-		t.Fatalf("logs[0].request = %T, want map[string]any", entry["request"])
+		t.Fatalf("logs[%q].request = %T, want map[string]any", "root log", entry["request"])
 	}
 
 	if request["id"] != "req-123" {
-		t.Fatalf("logs[0].request.id = %v, want %q", request["id"], "req-123")
+		t.Fatalf("logs[%q].request.id = %v, want %q", "root log", request["id"], "req-123")
 	}
 }
 
@@ -522,18 +519,15 @@ func TestAggregateRootOptionFromDerivedHandlerDoesNotLeakLoggerStateIntoFinalWid
 		t.Fatalf("logs = %T, want map[string]any", got["logs"])
 	}
 
-	entry, ok := logs["0"].(map[string]any)
-	if !ok {
-		t.Fatalf("logs[0] = %T, want map[string]any", logs["0"])
-	}
+	entry := logBucketByMessage(t, logs, "derived log")
 
 	request, ok := entry["request"].(map[string]any)
 	if !ok {
-		t.Fatalf("logs[0].request = %T, want map[string]any", entry["request"])
+		t.Fatalf("logs[%q].request = %T, want map[string]any", "derived log", entry["request"])
 	}
 
 	if request["id"] != "req-123" {
-		t.Fatalf("logs[0].request.id = %v, want %q", request["id"], "req-123")
+		t.Fatalf("logs[%q].request.id = %v, want %q", "derived log", request["id"], "req-123")
 	}
 }
 
@@ -593,23 +587,16 @@ func TestAggregateRootEmissionScopesDerivedLoggerStateToOnlyDerivedRecords(t *te
 		t.Fatalf("child.logs = %T, want map[string]any", child["logs"])
 	}
 
-	derivedEntry, ok := logs["0"].(map[string]any)
-	if !ok {
-		t.Fatalf("child.logs[0] = %T, want map[string]any", logs["0"])
-	}
-
-	baseEntry, ok := logs["1"].(map[string]any)
-	if !ok {
-		t.Fatalf("child.logs[1] = %T, want map[string]any", logs["1"])
-	}
+	derivedEntry := logBucketByMessage(t, logs, "derived log")
+	baseEntry := logBucketByMessage(t, logs, "base log")
 
 	request, ok := derivedEntry["request"].(map[string]any)
 	if !ok {
-		t.Fatalf("child.logs[0].request = %T, want map[string]any", derivedEntry["request"])
+		t.Fatalf("child.logs[%q].request = %T, want map[string]any", "derived log", derivedEntry["request"])
 	}
 
 	if request["id"] != "req-123" {
-		t.Fatalf("child.logs[0].request.id = %v, want %q", request["id"], "req-123")
+		t.Fatalf("child.logs[%q].request.id = %v, want %q", "derived log", request["id"], "req-123")
 	}
 
 	if _, ok := baseEntry["request"]; ok {
@@ -895,6 +882,15 @@ func attrTreeValue(value slog.Value) any {
 		attrs[attr.Key] = attrTreeValue(attr.Value)
 	}
 	return attrs
+}
+
+func logBucketByMessage(t *testing.T, logs map[string]any, message string) map[string]any {
+	t.Helper()
+	bucket, ok := logs[message].(map[string]any)
+	if !ok {
+		t.Fatalf("logs[%q] = %T, want map[string]any; logs = %v", message, logs[message], logs)
+	}
+	return bucket
 }
 
 func rootConfigHasAttachmentState(t *testing.T, ctx context.Context) bool {
