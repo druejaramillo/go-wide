@@ -28,6 +28,8 @@ Persistent operation metadata is attached through `ops.WithAttrs(ctx, attrs ...s
 
 Wide collection is optional and is attached explicitly at root creation through a wide-specific `ops.Option` produced by the wide handler.
 
+Aggregate collection limits are configured at handler construction time through wide handler options such as `WithAggregateLimit(...)`.
+
 Emission strategy is root-owned and inherited by descendants. The public strategy interface exposes:
 
 - `Collect`
@@ -37,7 +39,9 @@ The built-in strategies are passthrough and aggregate.
 
 `ops.End(ctx)` restores the parent context and flushes the root when the ending operation is the root.
 
-If aggregate collection exceeds configured limits, the root emits one synthetic overflow diagnostic, discards buffered aggregate state, and continues in passthrough mode for the rest of the root lifetime.
+If aggregate collection exceeds configured limits, the root emits one synthetic overflow diagnostic as an ordinary `slog.Record`, discards buffered aggregate state, and continues in passthrough mode for the rest of the root lifetime.
+
+The built-in overflow diagnostic uses the fixed message `wide aggregate overflow` and reserved attrs that identify the failure reason and configured limit.
 
 ## Consequences
 
@@ -50,3 +54,5 @@ Mixed strategy behavior inside one tree is avoided because the root owns the eff
 The collector remains optional rather than becoming an inherent part of every operation.
 
 Overflow behavior is predictable and avoids emitting misleading partial summaries.
+
+Aggregate limits remain a wide-handler concern instead of becoming another generic `ops` root option.

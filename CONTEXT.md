@@ -47,3 +47,15 @@ Persistent `slog` attributes attached directly to an operation node through `ops
 A structural summary of values that differed across merged child operations or merged log buckets.
 
 **Avoid:** timeline, history
+
+## aggregate-limit
+
+A wide handler configuration value that caps how many records a root-owned aggregate collector may buffer before it abandons aggregation for that root lifetime.
+
+**Avoid:** batch size, queue depth
+
+## overflow-diagnostic
+
+An ordinary `slog` record emitted once when aggregate collection exceeds its configured limit; it signals the overflow and the collector then degrades to passthrough for the rest of the root lifetime.
+
+**Avoid:** panic, dropped log
