@@ -604,6 +604,52 @@ func TestAggregateOverflowFallsBackToDiagnosticThenPassthrough(t *testing.T) {
 	}
 }
 
+func TestAggregateOverflowEmitsOnlyOneDiagnosticForRootLifetime(t *testing.T) {
+	downstream := &recordingHandler{}
+	handler := NewHandler(downstream, WithAggregate(), WithAggregateLimit(1))
+
+	rootCtx, err := ops.StartRoot(context.Background(), "root", handler.RootOption())
+	if err != nil {
+		t.Fatalf("StartRoot() error = %v", err)
+	}
+
+	logger := slog.New(handler)
+	logger.InfoContext(rootCtx, "first buffered")
+	logger.InfoContext(rootCtx, "second overflows")
+	logger.InfoContext(rootCtx, "third passthrough")
+	logger.InfoContext(rootCtx, "fourth passthrough")
+
+	records := downstream.Records()
+	if len(records) != 3 {
+		t.Fatalf("record count before End(root) = %d, want 3", len(records))
+	}
+
+	if records[0].Message != "wide aggregate overflow" {
+		t.Fatalf("first record message = %q, want %q", records[0].Message, "wide aggregate overflow")
+	}
+	if records[1].Message != "third passthrough" {
+		t.Fatalf("second record message = %q, want %q", records[1].Message, "third passthrough")
+	}
+	if records[2].Message != "fourth passthrough" {
+		t.Fatalf("third record message = %q, want %q", records[2].Message, "fourth passthrough")
+	}
+
+	for i := 1; i < len(records); i++ {
+		if records[i].Message == "wide aggregate overflow" {
+			t.Fatalf("unexpected extra overflow diagnostic at record %d", i)
+		}
+	}
+
+	if _, err := ops.End(rootCtx); err != nil {
+		t.Fatalf("End(root) error = %v", err)
+	}
+
+	afterEnd := downstream.Records()
+	if len(afterEnd) != 3 {
+		t.Fatalf("record count after End(root) = %d, want 3", len(afterEnd))
+	}
+}
+
 func TestAggregateInvalidLimitReturnsTypedRootOptionError(t *testing.T) {
 	handler := NewHandler(&recordingHandler{}, WithAggregate(), WithAggregateLimit(-1))
 
