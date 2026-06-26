@@ -321,7 +321,8 @@ func TestAggregateRootEmissionForSingleOperation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("StartRoot() error = %v", err)
 	}
-	if err := ops.WithAttrs(rootCtx,
+	if err := ops.WithAttrs(
+		rootCtx,
 		slog.String("request_id", "req-123"),
 		slog.String("tenant", "acme"),
 	); err != nil {
@@ -385,6 +386,78 @@ func TestAggregateRootEmissionForSingleOperation(t *testing.T) {
 			t.Fatalf("record count = %d, want 1", len(records))
 		}
 	})
+}
+
+func TestAggregateEndedChildContextFallsBackToPassthrough(t *testing.T) {
+	downstream := &recordingHandler{}
+	handler := NewHandler(downstream, WithAggregate())
+
+	rootCtx, err := ops.StartRoot(context.Background(), "root", handler.RootOption())
+	if err != nil {
+		t.Fatalf("StartRoot() error = %v", err)
+	}
+
+	childCtx, err := ops.Start(rootCtx, "child")
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	logger := slog.New(handler)
+	logger.InfoContext(childCtx, "before child end")
+
+	if _, err := ops.End(childCtx); err != nil {
+		t.Fatalf("End(child) error = %v", err)
+	}
+
+	logger.With("request_id", "req-123").InfoContext(childCtx, "after child end", slog.Int("attempt", 2))
+
+	beforeRootEnd := downstream.Records()
+	if len(beforeRootEnd) != 1 {
+		t.Fatalf("record count before End(root) = %d, want 1", len(beforeRootEnd))
+	}
+
+	passthrough := beforeRootEnd[0]
+	passthroughAttrs := recordAttrs(passthrough)
+
+	if passthrough.Message != "after child end" {
+		t.Fatalf("passthrough message = %q, want %q", passthrough.Message, "after child end")
+	}
+	if passthroughAttrs["request_id"] != "req-123" {
+		t.Fatalf("request_id = %v, want %q", passthroughAttrs["request_id"], "req-123")
+	}
+	if passthroughAttrs["attempt"] != int64(2) {
+		t.Fatalf("attempt = %v, want %v", passthroughAttrs["attempt"], 2)
+	}
+	if _, ok := passthroughAttrs["logs"]; ok {
+		t.Fatalf("unexpected aggregate attrs in passthrough record: %v", passthroughAttrs)
+	}
+
+	if _, err := ops.End(rootCtx); err != nil {
+		t.Fatalf("End(root) error = %v", err)
+	}
+
+	records := downstream.Records()
+	if len(records) != 2 {
+		t.Fatalf("record count after End(root) = %d, want 2", len(records))
+	}
+
+	attrs := recordAttrTree(records[1])
+	child, ok := attrs["child"].(map[string]any)
+	if !ok {
+		t.Fatalf("child = %T, want map[string]any", attrs["child"])
+	}
+
+	logs, ok := child["logs"].(map[string]any)
+	if !ok {
+		t.Fatalf("child.logs = %T, want map[string]any", child["logs"])
+	}
+
+	if _, ok := logs["before child end"]; !ok {
+		t.Fatalf("logs missing buffered child message: %v", logs)
+	}
+	if _, ok := logs["after child end"]; ok {
+		t.Fatalf("logs unexpectedly included ended child context message: %v", logs)
+	}
 }
 
 func TestAggregateRootEmissionIncludesChildOperationAttrsAsDirectGroups(t *testing.T) {
@@ -697,7 +770,8 @@ func TestAggregateRootEmissionMergesSameNamedChildOperationsByStructure(t *testi
 	if err != nil {
 		t.Fatalf("Start(first child) error = %v", err)
 	}
-	if err := ops.WithAttrs(firstChildCtx,
+	if err := ops.WithAttrs(
+		firstChildCtx,
 		slog.String("provider", "stripe"),
 		slog.String("phase", "authorize"),
 	); err != nil {
@@ -711,7 +785,8 @@ func TestAggregateRootEmissionMergesSameNamedChildOperationsByStructure(t *testi
 	if err != nil {
 		t.Fatalf("Start(second child) error = %v", err)
 	}
-	if err := ops.WithAttrs(secondChildCtx,
+	if err := ops.WithAttrs(
+		secondChildCtx,
 		slog.String("provider", "stripe"),
 		slog.String("phase", "capture"),
 	); err != nil {
@@ -957,6 +1032,26 @@ func (h *recordingHandler) Records() []slog.Record {
 
 type disabledRecordingHandler struct {
 	*recordingHandler
+}
+
+type erroringHandler struct {
+	err error
+}
+
+func (h *erroringHandler) Enabled(context.Context, slog.Level) bool {
+	return true
+}
+
+func (h *erroringHandler) Handle(context.Context, slog.Record) error {
+	return h.err
+}
+
+func (h *erroringHandler) WithAttrs([]slog.Attr) slog.Handler {
+	return h
+}
+
+func (h *erroringHandler) WithGroup(string) slog.Handler {
+	return h
 }
 
 func newDisabledRecordingHandler() *disabledRecordingHandler {

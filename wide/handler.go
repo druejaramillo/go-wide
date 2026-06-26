@@ -62,7 +62,10 @@ func (h *Handler) Enabled(ctx context.Context, level slog.Level) bool {
 	if h.config.strategy == strategyPassthrough {
 		return h.handler.Enabled(ctx, level)
 	}
-	if state := aggregateStateFromContext(ctx); state != nil {
+	state := aggregateStateFromContext(ctx)
+	node := aggregateNodeFromContext(ctx)
+	op := ops.GetOperationFromContext(ctx)
+	if state != nil && node != nil && op != nil && !op.IsEnded() {
 		return true
 	}
 	return h.handler.Enabled(ctx, level)
@@ -75,7 +78,8 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 
 	state := aggregateStateFromContext(ctx)
 	node := aggregateNodeFromContext(ctx)
-	if state == nil || node == nil {
+	op := ops.GetOperationFromContext(ctx)
+	if state == nil || node == nil || op == nil || op.IsEnded() {
 		return h.handler.Handle(ctx, r)
 	}
 

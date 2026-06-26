@@ -11,14 +11,16 @@ var (
 )
 
 func StartRoot(ctx context.Context, op string, opts ...Option) (context.Context, error) {
-	if GetOperationFromContext(ctx) != nil {
+	if getActiveOperationFromContext(ctx) != nil {
 		return ctx, ErrNestedRootOperation
 	}
+
 	ctx = context.WithValue(ctx, parentContextKey, ctx)
 	rc := &RootConfig{}
 	for _, opt := range opts {
 		opt(rc)
 	}
+
 	operation := &Operation{
 		Op:          op,
 		Description: "",
@@ -26,6 +28,7 @@ func StartRoot(ctx context.Context, op string, opts ...Option) (context.Context,
 		parentOps:   []string{},
 		rootConfig:  rc,
 	}
+
 	ctx = context.WithValue(ctx, operationKey, operation)
 	for _, o := range rc.LifecycleObservers {
 		ctx = o.OnStart(ctx, operation)
@@ -34,20 +37,20 @@ func StartRoot(ctx context.Context, op string, opts ...Option) (context.Context,
 }
 
 func Start(ctx context.Context, op string) (context.Context, error) {
-	parent := GetOperationFromContext(ctx)
-	var parentOps []string
+	parent := getActiveOperationFromContext(ctx)
 	if parent == nil {
 		return ctx, ErrNoActiveOperation
 	}
-	parentOps = parent.Ops()
+
 	rc := parent.rootConfig
 	operation := &Operation{
 		Op:          op,
 		Description: "",
 		parent:      parent,
-		parentOps:   parentOps,
+		parentOps:   parent.Ops(),
 		rootConfig:  rc,
 	}
+
 	ctx = context.WithValue(ctx, parentContextKey, ctx)
 	ctx = context.WithValue(ctx, operationKey, operation)
 	for _, o := range rc.LifecycleObservers {
@@ -57,13 +60,17 @@ func Start(ctx context.Context, op string) (context.Context, error) {
 }
 
 func End(ctx context.Context) (context.Context, error) {
-	operation := GetOperationFromContext(ctx)
+	operation := getActiveOperationFromContext(ctx)
 	if operation == nil {
 		return ctx, ErrNoActiveOperation
 	}
+
 	for _, o := range operation.rootConfig.LifecycleObservers {
 		_ = o.OnEnd(ctx, operation)
 	}
+
+	operation.markEnded()
+
 	ctx, ok := ctx.Value(parentContextKey).(context.Context)
 	if !ok {
 		return ctx, errors.New("no parent context found")

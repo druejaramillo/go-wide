@@ -6,7 +6,10 @@ are configured.
 */
 package ops
 
-import "log/slog"
+import (
+	"log/slog"
+	"sync/atomic"
+)
 
 type contextKey string
 
@@ -23,6 +26,7 @@ type Operation struct {
 	parentOps   []string
 	rootConfig  *RootConfig
 	attrs       []slog.Attr
+	ended       atomic.Bool
 }
 
 func (o *Operation) Ops() []string {
@@ -32,6 +36,16 @@ func (o *Operation) Ops() []string {
 
 func (o *Operation) Attrs() []slog.Attr {
 	return o.attrs
+}
+
+func (o *Operation) IsEnded() bool {
+	return o != nil && o.ended.Load()
+}
+
+func (o *Operation) markEnded() {
+	if o != nil {
+		o.ended.Store(true)
+	}
 }
 
 type RootConfig struct {
