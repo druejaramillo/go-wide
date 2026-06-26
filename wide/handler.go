@@ -25,7 +25,8 @@ const (
 )
 
 type handlerConfig struct {
-	strategy handlerStrategy
+	strategy       handlerStrategy
+	aggregateLimit int
 }
 
 type Option func(*handlerConfig)
@@ -33,6 +34,12 @@ type Option func(*handlerConfig)
 func WithAggregate() Option {
 	return func(cfg *handlerConfig) {
 		cfg.strategy = strategyAggregate
+	}
+}
+
+func WithAggregateLimit(limit int) Option {
+	return func(cfg *handlerConfig) {
+		cfg.aggregateLimit = limit
 	}
 }
 
@@ -62,12 +69,14 @@ func (h *Handler) Enabled(ctx context.Context, level slog.Level) bool {
 	if h.config.strategy == strategyPassthrough {
 		return h.handler.Enabled(ctx, level)
 	}
+
 	state := aggregateStateFromContext(ctx)
 	node := aggregateNodeFromContext(ctx)
 	op := ops.GetOperationFromContext(ctx)
-	if state != nil && node != nil && op != nil && !op.IsEnded() {
+	if state != nil && node != nil && op != nil && !op.IsEnded() && !state.isOverflowed() {
 		return true
 	}
+
 	return h.handler.Enabled(ctx, level)
 }
 
@@ -79,7 +88,7 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 	state := aggregateStateFromContext(ctx)
 	node := aggregateNodeFromContext(ctx)
 	op := ops.GetOperationFromContext(ctx)
-	if state == nil || node == nil || op == nil || op.IsEnded() {
+	if state == nil || node == nil || op == nil || op.IsEnded() || state.isOverflowed() {
 		return h.handler.Handle(ctx, r)
 	}
 
@@ -92,7 +101,15 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 		)...,
 	)
 
-	state.collect(node, effectiveRecord)
+	if overflowed := state.collect(node, effectiveRecord); overflowed {
+		diagnostic := slog.NewRecord(time.Now(), slog.LevelWarn, "wide aggregate overflow", 0)
+		diagnostic.AddAttrs(
+			slog.String("reason", "limit_exceeded"),
+			slog.Int("limit", state.limit),
+		)
+		return h.handler.Handle(ctx, diagnostic)
+	}
+
 	return nil
 }
 
@@ -160,7 +177,10 @@ func (h *Handler) RootOption() ops.Option {
 	}
 
 	return func(rc *ops.RootConfig) {
-		observer := &aggregateObserver{handler: h.rootHandler}
+		observer := &aggregateObserver{
+			handler: h.rootHandler,
+			limit:   h.config.aggregateLimit,
+		}
 		rc.LifecycleObservers = append(rc.LifecycleObservers, observer)
 		rc.ErrorObservers = append(rc.ErrorObservers, observer)
 	}
@@ -189,10 +209,13 @@ const (
 )
 
 type aggregateState struct {
-	mu     sync.Mutex
-	start  time.Time
-	status string
-	root   *aggregateNode
+	mu         sync.Mutex
+	start      time.Time
+	status     string
+	root       *aggregateNode
+	limit      int
+	collected  int
+	overflowed bool
 }
 
 type aggregateNode struct {
@@ -242,9 +265,43 @@ func aggregateNodeFromContext(ctx context.Context) *aggregateNode {
 	return state
 }
 
-func (s *aggregateState) collect(node *aggregateNode, r slog.Record) {
+func (s *aggregateState) isOverflowed() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.overflowed
+}
+
+func (s *aggregateState) overflow(limit int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.overflowed = true
+	s.collected = 0
+
+	// discard buffered aggregate state but keep root node alive
+	s.root.shared = nil
+	s.root.variants = nil
+	s.root.logs = nil
+	s.root.children = map[string]*aggregateNode{}
+}
+
+func (s *aggregateState) collect(node *aggregateNode, r slog.Record) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.overflowed {
+		return false
+	}
+
+	if s.limit > 0 && s.collected >= s.limit {
+		s.overflowed = true
+		s.collected = 0
+		s.root.shared = nil
+		s.root.variants = nil
+		s.root.logs = nil
+		s.root.children = map[string]*aggregateNode{}
+		return true
+	}
 
 	node.logs = append(node.logs, collectedRecord{
 		time:    r.Time,
@@ -252,6 +309,8 @@ func (s *aggregateState) collect(node *aggregateNode, r slog.Record) {
 		message: r.Message,
 		attrs:   attrsFromRecord(r),
 	})
+	s.collected++
+	return false
 }
 
 func attrsFromRecord(r slog.Record) []slog.Attr {
@@ -532,6 +591,7 @@ func (s *aggregateState) markError() {
 
 type aggregateObserver struct {
 	handler slog.Handler
+	limit   int
 }
 
 func (o *aggregateObserver) OnStart(ctx context.Context, op *ops.Operation) context.Context {
@@ -545,6 +605,7 @@ func (o *aggregateObserver) OnStart(ctx context.Context, op *ops.Operation) cont
 			start:  time.Now(),
 			status: "ok",
 			root:   root,
+			limit:  o.limit,
 		}
 		ctx = context.WithValue(ctx, aggregateStateKey, state)
 		return context.WithValue(ctx, aggregateNodeKey, root)
@@ -593,6 +654,10 @@ func (o *aggregateObserver) OnEnd(ctx context.Context, op *ops.Operation) contex
 	state := aggregateStateFromContext(ctx)
 	node := aggregateNodeFromContext(ctx)
 	if state == nil || node == nil {
+		return ctx
+	}
+
+	if state.isOverflowed() {
 		return ctx
 	}
 

@@ -484,6 +484,75 @@ func TestAggregateRootEndReturnsTypedErrorWhenFinalEmissionFails(t *testing.T) {
 	}
 }
 
+func TestAggregateOverflowFallsBackToDiagnosticThenPassthrough(t *testing.T) {
+	downstream := &recordingHandler{}
+	handler := NewHandler(downstream, WithAggregate(), WithAggregateLimit(1))
+
+	rootCtx, err := ops.StartRoot(context.Background(), "root", handler.RootOption())
+	if err != nil {
+		t.Fatalf("StartRoot() error = %v", err)
+	}
+
+	logger := slog.New(handler)
+	logger.InfoContext(rootCtx, "first buffered")
+
+	if got := downstream.Records(); len(got) != 0 {
+		t.Fatalf("record count before overflow = %d, want 0", len(got))
+	}
+
+	logger.InfoContext(rootCtx, "second overflows")
+
+	afterOverflow := downstream.Records()
+	if len(afterOverflow) != 1 {
+		t.Fatalf("record count after overflow = %d, want 1", len(afterOverflow))
+	}
+
+	diagnostic := afterOverflow[0]
+	diagnosticAttrs := recordAttrs(diagnostic)
+
+	if diagnostic.Message != "wide aggregate overflow" {
+		t.Fatalf("diagnostic message = %q, want %q", diagnostic.Message, "wide aggregate overflow")
+	}
+	if diagnosticAttrs["reason"] != "limit_exceeded" {
+		t.Fatalf("reason = %v, want %q", diagnosticAttrs["reason"], "limit_exceeded")
+	}
+	if diagnosticAttrs["limit"] != int64(1) {
+		t.Fatalf("limit = %v, want %v", diagnosticAttrs["limit"], 1)
+	}
+
+	logger.With("request_id", "req-123").InfoContext(rootCtx, "after overflow", slog.Int("attempt", 3))
+
+	beforeRootEnd := downstream.Records()
+	if len(beforeRootEnd) != 2 {
+		t.Fatalf("record count before End(root) = %d, want 2", len(beforeRootEnd))
+	}
+
+	passthrough := beforeRootEnd[1]
+	passthroughAttrs := recordAttrs(passthrough)
+
+	if passthrough.Message != "after overflow" {
+		t.Fatalf("passthrough message = %q, want %q", passthrough.Message, "after overflow")
+	}
+	if passthroughAttrs["request_id"] != "req-123" {
+		t.Fatalf("request_id = %v, want %q", passthroughAttrs["request_id"], "req-123")
+	}
+	if passthroughAttrs["attempt"] != int64(3) {
+		t.Fatalf("attempt = %v, want %v", passthroughAttrs["attempt"], 3)
+	}
+	if _, ok := passthroughAttrs["logs"]; ok {
+		t.Fatalf("unexpected aggregate attrs in passthrough record: %v", passthroughAttrs)
+	}
+
+	if _, err := ops.End(rootCtx); err != nil {
+		t.Fatalf("End(root) error = %v", err)
+	}
+
+	afterRootEnd := downstream.Records()
+	if len(afterRootEnd) != 2 {
+		t.Fatalf("record count after End(root) = %d, want 2", len(afterRootEnd))
+	}
+}
+
 func TestAggregateRootEmissionIncludesChildOperationAttrsAsDirectGroups(t *testing.T) {
 	downstream := &recordingHandler{}
 	handler := NewHandler(downstream, WithAggregate())
