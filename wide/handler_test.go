@@ -553,6 +553,21 @@ func TestAggregateOverflowFallsBackToDiagnosticThenPassthrough(t *testing.T) {
 	}
 }
 
+func TestAggregateInvalidLimitReturnsTypedRootOptionError(t *testing.T) {
+	handler := NewHandler(&recordingHandler{}, WithAggregate(), WithAggregateLimit(-1))
+
+	rootCtx, err := ops.StartRoot(context.Background(), "root", handler.RootOption())
+	if err == nil {
+		t.Fatal("StartRoot() error = nil, want typed invalid option usage error")
+	}
+	if !errors.Is(err, ops.ErrInvalidOptionUsage) {
+		t.Fatalf("errors.Is(%v, %v) = false, want true", err, ops.ErrInvalidOptionUsage)
+	}
+	if got := ops.GetOperationFromContext(rootCtx); got != nil {
+		t.Fatalf("StartRoot() should not attach an operation on invalid option usage, got %v", got.Ops())
+	}
+}
+
 func TestAggregateRootEmissionIncludesChildOperationAttrsAsDirectGroups(t *testing.T) {
 	downstream := &recordingHandler{}
 	handler := NewHandler(downstream, WithAggregate())

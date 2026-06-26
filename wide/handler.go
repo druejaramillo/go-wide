@@ -6,6 +6,7 @@ package wide
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"maps"
 	"reflect"
@@ -177,6 +178,11 @@ func (h *Handler) RootOption() ops.Option {
 	}
 
 	return func(rc *ops.RootConfig) {
+		if h.config.aggregateLimit < 0 {
+			ops.SetOptionError(rc, fmt.Errorf("%w: aggregate limit must be >= 0", ops.ErrInvalidOptionUsage))
+			return
+		}
+
 		observer := &aggregateObserver{
 			handler: h.rootHandler,
 			limit:   h.config.aggregateLimit,

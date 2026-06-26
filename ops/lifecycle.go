@@ -10,6 +10,7 @@ var (
 	ErrNoActiveOperation   = errors.New("no active operation")
 	ErrNestedRootOperation = errors.New("cannot create a nested root operation")
 	ErrRootEndEmission     = errors.New("root end emission failed")
+	ErrInvalidOptionUsage  = errors.New("invalid option usage")
 )
 
 func StartRoot(ctx context.Context, op string, opts ...Option) (context.Context, error) {
@@ -18,9 +19,14 @@ func StartRoot(ctx context.Context, op string, opts ...Option) (context.Context,
 	}
 
 	ctx = context.WithValue(ctx, parentContextKey, ctx)
+
 	rc := &RootConfig{}
 	for _, opt := range opts {
 		opt(rc)
+	}
+
+	if rc.optionErr != nil {
+		return ctx, rc.optionErr
 	}
 
 	operation := &Operation{

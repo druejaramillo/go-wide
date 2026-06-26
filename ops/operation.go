@@ -51,6 +51,17 @@ func (o *Operation) markEnded() {
 type RootConfig struct {
 	LifecycleObservers []LifecycleObserver
 	ErrorObservers     []ErrorObserver
+	optionErr          error
 }
 
 type Option func(*RootConfig)
+
+func SetOptionError(rc *RootConfig, err error) {
+	if rc == nil || err == nil {
+		return
+	}
+	if rc.optionErr != nil {
+		return
+	}
+	rc.optionErr = err
+}
