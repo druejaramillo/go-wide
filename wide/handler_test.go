@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"reflect"
 	"sync"
@@ -457,6 +458,29 @@ func TestAggregateEndedChildContextFallsBackToPassthrough(t *testing.T) {
 	}
 	if _, ok := logs["after child end"]; ok {
 		t.Fatalf("logs unexpectedly included ended child context message: %v", logs)
+	}
+}
+
+func TestAggregateRootEndReturnsTypedErrorWhenFinalEmissionFails(t *testing.T) {
+	emitErr := errors.New("downstream write failed")
+	handler := NewHandler(&erroringHandler{err: emitErr}, WithAggregate())
+
+	rootCtx, err := ops.StartRoot(context.Background(), "root", handler.RootOption())
+	if err != nil {
+		t.Fatalf("StartRoot() error = %v", err)
+	}
+
+	slog.New(handler).InfoContext(rootCtx, "root log")
+
+	_, err = ops.End(rootCtx)
+	if err == nil {
+		t.Fatal("End(root) error = nil, want typed root-end emission error")
+	}
+	if !errors.Is(err, ops.ErrRootEndEmission) {
+		t.Fatalf("errors.Is(%v, %v) = false, want true", err, ops.ErrRootEndEmission)
+	}
+	if !errors.Is(err, emitErr) {
+		t.Fatalf("errors.Is(%v, %v) = false, want true", err, emitErr)
 	}
 }
 

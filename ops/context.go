@@ -25,3 +25,25 @@ func GetErrorFromContext(ctx context.Context) error {
 	}
 	return err
 }
+
+const endErrorKey contextKey = "go-wide.ops.end_error"
+
+func WithEndError(ctx context.Context, err error) context.Context {
+	if err == nil {
+		return ctx
+	}
+
+	if existing, ok := ctx.Value(endErrorKey).(error); ok && existing != nil {
+		return ctx
+	}
+
+	return context.WithValue(ctx, endErrorKey, err)
+}
+
+func getEndErrorFromContext(ctx context.Context) error {
+	err, ok := ctx.Value(endErrorKey).(error)
+	if !ok {
+		return nil
+	}
+	return err
+}

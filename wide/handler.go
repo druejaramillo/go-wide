@@ -603,7 +603,10 @@ func (o *aggregateObserver) OnEnd(ctx context.Context, op *ops.Operation) contex
 	}
 
 	record := state.finalRecord(op)
-	_ = o.handler.Handle(ctx, record)
+	if err := o.handler.Handle(ctx, record); err != nil {
+		return ops.WithEndError(ctx, err)
+	}
+
 	return ctx
 }
 

@@ -3,11 +3,13 @@ package ops
 import (
 	"context"
 	"errors"
+	"fmt"
 )
 
 var (
 	ErrNoActiveOperation   = errors.New("no active operation")
 	ErrNestedRootOperation = errors.New("cannot create a nested root operation")
+	ErrRootEndEmission     = errors.New("root end emission failed")
 )
 
 func StartRoot(ctx context.Context, op string, opts ...Option) (context.Context, error) {
@@ -66,14 +68,19 @@ func End(ctx context.Context) (context.Context, error) {
 	}
 
 	for _, o := range operation.rootConfig.LifecycleObservers {
-		_ = o.OnEnd(ctx, operation)
+		ctx = o.OnEnd(ctx, operation)
 	}
 
 	operation.markEnded()
 
-	ctx, ok := ctx.Value(parentContextKey).(context.Context)
+	parentCtx, ok := ctx.Value(parentContextKey).(context.Context)
 	if !ok {
 		return ctx, errors.New("no parent context found")
 	}
-	return ctx, nil
+
+	if endErr := getEndErrorFromContext(ctx); endErr != nil {
+		return parentCtx, fmt.Errorf("%w: %w", ErrRootEndEmission, endErr)
+	}
+
+	return parentCtx, nil
 }
