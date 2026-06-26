@@ -461,6 +461,57 @@ func TestAggregateEndedChildContextFallsBackToPassthrough(t *testing.T) {
 	}
 }
 
+func TestAggregateEndedRootContextFallsBackToPassthrough(t *testing.T) {
+	downstream := &recordingHandler{}
+	handler := NewHandler(downstream, WithAggregate())
+
+	rootCtx, err := ops.StartRoot(context.Background(), "root", handler.RootOption())
+	if err != nil {
+		t.Fatalf("StartRoot() error = %v", err)
+	}
+
+	logger := slog.New(handler)
+	logger.InfoContext(rootCtx, "before root end")
+
+	if _, err := ops.End(rootCtx); err != nil {
+		t.Fatalf("End(root) error = %v", err)
+	}
+
+	logger.With("request_id", "req-123").InfoContext(rootCtx, "after root end", slog.Int("attempt", 2))
+
+	records := downstream.Records()
+	if len(records) != 2 {
+		t.Fatalf("record count after stale root log = %d, want 2", len(records))
+	}
+
+	aggregate := recordAttrTree(records[0])
+	logs, ok := aggregate["logs"].(map[string]any)
+	if !ok {
+		t.Fatalf("logs = %T, want map[string]any", aggregate["logs"])
+	}
+	if _, ok := logs["before root end"]; !ok {
+		t.Fatalf("logs missing buffered root message: %v", logs)
+	}
+	if _, ok := logs["after root end"]; ok {
+		t.Fatalf("logs unexpectedly included ended root context message: %v", logs)
+	}
+
+	passthrough := records[1]
+	passthroughAttrs := recordAttrs(passthrough)
+	if passthrough.Message != "after root end" {
+		t.Fatalf("passthrough message = %q, want %q", passthrough.Message, "after root end")
+	}
+	if passthroughAttrs["request_id"] != "req-123" {
+		t.Fatalf("request_id = %v, want %q", passthroughAttrs["request_id"], "req-123")
+	}
+	if passthroughAttrs["attempt"] != int64(2) {
+		t.Fatalf("attempt = %v, want %v", passthroughAttrs["attempt"], 2)
+	}
+	if _, ok := passthroughAttrs["logs"]; ok {
+		t.Fatalf("unexpected aggregate attrs in passthrough record: %v", passthroughAttrs)
+	}
+}
+
 func TestAggregateRootEndReturnsTypedErrorWhenFinalEmissionFails(t *testing.T) {
 	emitErr := errors.New("downstream write failed")
 	handler := NewHandler(&erroringHandler{err: emitErr}, WithAggregate())
