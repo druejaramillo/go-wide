@@ -2,13 +2,12 @@ package ops
 
 import (
 	"context"
-	"errors"
 )
 
 func Error(ctx context.Context, err error) (context.Context, error) {
 	operation := GetOperationFromContext(ctx)
 	if operation == nil {
-		return ctx, errors.New("expected an active operation")
+		return ctx, ErrNoActiveOperation
 	}
 	if err == nil {
 		return ctx, nil

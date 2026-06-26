@@ -11,6 +11,7 @@ func TestInvalidLifecycleUsageReturnsErrors(t *testing.T) {
 	t.Run("Start requires an existing root operation", func(t *testing.T) {
 		startedCtx, err := Start(context.Background(), "child")
 		assertError(t, err)
+		assertErrorIs(t, err, ErrNoActiveOperation)
 		assertContextNotNil(t, startedCtx)
 
 		if got := GetOperationFromContext(startedCtx); got != nil {
@@ -24,6 +25,7 @@ func TestInvalidLifecycleUsageReturnsErrors(t *testing.T) {
 
 		nestedRootCtx, err := StartRoot(rootCtx, "nested-root")
 		assertError(t, err)
+		assertErrorIs(t, err, ErrNestedRootOperation)
 		assertContextNotNil(t, nestedRootCtx)
 
 		got := GetOperationFromContext(nestedRootCtx)
@@ -38,6 +40,7 @@ func TestInvalidLifecycleUsageReturnsErrors(t *testing.T) {
 	t.Run("End requires an active operation", func(t *testing.T) {
 		endedCtx, err := End(context.Background())
 		assertError(t, err)
+		assertErrorIs(t, err, ErrNoActiveOperation)
 		assertContextNotNil(t, endedCtx)
 
 		if got := GetOperationFromContext(endedCtx); got != nil {
@@ -48,6 +51,7 @@ func TestInvalidLifecycleUsageReturnsErrors(t *testing.T) {
 	t.Run("Error requires an active operation", func(t *testing.T) {
 		reportedCtx, err := Error(context.Background(), errors.New("boom"))
 		assertError(t, err)
+		assertErrorIs(t, err, ErrNoActiveOperation)
 		assertContextNotNil(t, reportedCtx)
 
 		if got := GetOperationFromContext(reportedCtx); got != nil {
@@ -63,6 +67,13 @@ func assertError(t *testing.T, err error) {
 	t.Helper()
 	if err == nil {
 		t.Fatal("expected an error")
+	}
+}
+
+func assertErrorIs(t *testing.T, err error, target error) {
+	t.Helper()
+	if !errors.Is(err, target) {
+		t.Fatalf("errors.Is(%v, %v) = false, want true", err, target)
 	}
 }
 
