@@ -37,12 +37,11 @@ func (o *Observer) OnStart(ctx context.Context, op *ops.Operation) context.Conte
 	}
 
 	if len(op.Ops()) != 1 {
-		parentSpan := sentrysdk.SpanFromContext(ctx)
-		if parentSpan == nil {
+		if sentrysdk.SpanFromContext(ctx) == nil {
 			return ctx
 		}
 
-		childSpan := parentSpan.StartChild(op.Op)
+		childSpan := sentrysdk.StartSpan(ctx, op.Op)
 		return childSpan.Context()
 	}
 
@@ -55,6 +54,15 @@ func (o *Observer) OnStart(ctx context.Context, op *ops.Operation) context.Conte
 func (o *Observer) OnEnd(ctx context.Context, op *ops.Operation) context.Context {
 	// TODO: Finish child spans on child end without breaking parent operation context.
 	// TODO: Finish the root transaction on root end.
+	if op == nil || len(op.Ops()) == 1 {
+		return ctx
+	}
+
+	span := sentrysdk.SpanFromContext(ctx)
+	if span != nil {
+		span.Finish()
+	}
+
 	return ctx
 }
 
