@@ -31,3 +31,20 @@ func TestReporterCaptureUsesHubFromContext(t *testing.T) {
 		t.Fatalf("captured exception value = %q, want %q", got, reportErr.Error())
 	}
 }
+
+func TestReporterCaptureFallsBackToBaseHub(t *testing.T) {
+	baseHub, baseTransport := newTestHubWithTransport(t)
+	reporter := NewReporter(baseHub)
+
+	reportErr := errors.New("checkout failed")
+	reporter.Capture(context.Background(), reportErr)
+
+	events := baseTransport.Events()
+	if len(events) != 1 {
+		t.Fatalf("base transport captured %d events, want 1", len(events))
+	}
+
+	if got := events[0].Exception[0].Value; got != reportErr.Error() {
+		t.Fatalf("captured exception value = %q, want %q", got, reportErr.Error())
+	}
+}

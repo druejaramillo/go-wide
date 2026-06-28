@@ -27,6 +27,9 @@ func (r *Reporter) Capture(ctx context.Context, err error) {
 
 	hub := sentrysdk.GetHubFromContext(ctx)
 	if hub == nil {
+		hub = r.hub
+	}
+	if hub == nil {
 		return
 	}
 
