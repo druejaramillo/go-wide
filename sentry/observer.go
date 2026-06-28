@@ -17,6 +17,8 @@ type Observer struct {
 }
 
 func NewObserver(hub *sentrysdk.Hub) *Observer {
+	// TODO(phase-4 done): Return an observer whose RootOption registers the same
+	// instance as both a lifecycle observer and an error observer.
 	return &Observer{hub: hub}
 }
 
@@ -28,14 +30,20 @@ func (o *Observer) RootOption() ops.Option {
 }
 
 func (o *Observer) OnStart(ctx context.Context, op *ops.Operation) context.Context {
+	// TODO: Root start derives a context with a Sentry hub and root transaction.
+	// TODO: Child start derives a context with a child span under the active trace.
 	return ctx
 }
 
 func (o *Observer) OnEnd(ctx context.Context, op *ops.Operation) context.Context {
+	// TODO: Finish child spans on child end without breaking parent operation context.
+	// TODO: Finish the root transaction on root end.
 	return ctx
 }
 
 func (o *Observer) OnError(ctx context.Context, op *ops.Operation, err error) {
+	// TODO: Capture each non-nil ops.Error call to Sentry and mark the active span failed.
+	// TODO: Preserve repeated capture behavior across repeated ops.Error calls.
 	_ = ctx
 	_ = op
 	_ = err

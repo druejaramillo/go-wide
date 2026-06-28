@@ -6,3 +6,5 @@ require (
 	github.com/druejaramillo/go-wide v0.0.0
 	github.com/getsentry/sentry-go v0.47.0
 )
+
+replace github.com/druejaramillo/go-wide => ..
