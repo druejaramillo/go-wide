@@ -623,7 +623,10 @@ func (o *aggregateObserver) OnStart(ctx context.Context, op *ops.Operation) cont
 			name:     op.Op,
 			children: map[string]*aggregateNode{},
 		}
-		rawRoot := &rawNode{name: op.Op}
+		rawRoot := &rawNode{
+			name:   op.Op,
+			status: "ok",
+		}
 
 		state := &aggregateState{
 			start:   time.Now(),
@@ -642,7 +645,10 @@ func (o *aggregateObserver) OnStart(ctx context.Context, op *ops.Operation) cont
 	child := state.childNode(parent, op.Op)
 
 	rawParent := rawNodeFromContext(ctx)
-	rawChild := &rawNode{name: op.Op}
+	rawChild := &rawNode{
+		name:   op.Op,
+		status: "ok",
+	}
 	rawParent.children = append(rawParent.children, rawChild)
 
 	ctx = context.WithValue(ctx, aggregateNodeKey, child)
@@ -834,19 +840,18 @@ func (s *aggregateState) collectSnapshotLog(node *aggregateNode, entry LogEntry)
 func (s *aggregateState) rawSnapshot(op *ops.Operation) OperationSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return rawSnapshotFromNode(s.rawRoot, true)
+	snapshot := rawSnapshotFromNode(s.rawRoot, true)
+	snapshot.Status = s.status
+	return snapshot
 }
 
 func rawSnapshotFromNode(node *rawNode, isRoot bool) OperationSnapshot {
 	snapshot := OperationSnapshot{
-		Name:  node.name,
-		Attrs: cloneAttrs(node.attrs),
-		Logs:  cloneLogEntries(node.logs),
-	}
-
-	if !isRoot {
-		snapshot.Status = node.status
-		snapshot.Error = node.errMsg
+		Name:   node.name,
+		Attrs:  cloneAttrs(node.attrs),
+		Logs:   cloneLogEntries(node.logs),
+		Status: node.status,
+		Error:  node.errMsg,
 	}
 
 	for _, child := range node.children {

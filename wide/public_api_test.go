@@ -314,6 +314,9 @@ func TestCustomStrategyCanConsumePublicSurfaceWithoutInternalImports(t *testing.
 	if snapshot.Name != "root" {
 		t.Fatalf("snapshot.Name = %q, want %q", snapshot.Name, "root")
 	}
+	if snapshot.Status != "error" {
+		t.Fatalf("snapshot.Status = %q, want %q", snapshot.Status, "error")
+	}
 
 	rootAttrs := attrsToFlatMap(snapshot.Attrs)
 	if rootAttrs["request_id"] != "req-123" {
