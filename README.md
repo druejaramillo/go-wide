@@ -266,6 +266,14 @@ type ErrorReporter interface {
 
 That keeps vendor-specific reporting integrations outside the core module, which matches the design in the ADRs.
 
+This repository also includes a nested Sentry integration module at `./sentry`:
+
+- module path: `github.com/druejaramillo/go-wide/sentry`
+- provides `sentry.Observer` for `ops` tracing and explicit operation error capture
+- provides `sentry.Reporter` for the `err.ErrorReporter` seam
+
+For installation, wiring, and usage examples, see [`sentry/README.md`](./sentry/README.md).
+
 ## Custom Strategies
 
 Custom wide strategies only need the public `wide` API:
