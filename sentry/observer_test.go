@@ -30,6 +30,46 @@ func TestObserverStartRootDerivesSentryContext(t *testing.T) {
 	}
 }
 
+func TestObserverStartChildDerivesChildSpan(t *testing.T) {
+	observer := NewObserver(newTestHub(t))
+
+	rootCtx, err := wideops.StartRoot(context.Background(), "checkout", observer.RootOption())
+	if err != nil {
+		t.Fatalf("StartRoot() error = %v", err)
+	}
+
+	rootTransaction := sentrysdk.TransactionFromContext(rootCtx)
+	if rootTransaction == nil {
+		t.Fatal("TransactionFromContext(rootCtx) = nil, want root transaction")
+	}
+
+	childCtx, err := wideops.Start(rootCtx, "charge")
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	childSpan := sentrysdk.SpanFromContext(childCtx)
+	if childSpan == nil {
+		t.Fatal("SpanFromContext(childCtx) = nil, want child span")
+	}
+
+	if childSpan == rootTransaction {
+		t.Fatal("SpanFromContext(childCtx) = root transaction, want child span")
+	}
+
+	if childSpan.Op != "charge" {
+		t.Fatalf("childSpan.Op = %q, want %q", childSpan.Op, "charge")
+	}
+
+	if childSpan.ParentSpanID != rootTransaction.SpanID {
+		t.Fatalf("childSpan.ParentSpanID = %q, want %q", childSpan.ParentSpanID, rootTransaction.SpanID)
+	}
+
+	if childSpan.TraceID != rootTransaction.TraceID {
+		t.Fatalf("childSpan.TraceID = %q, want %q", childSpan.TraceID, rootTransaction.TraceID)
+	}
+}
+
 func newTestHub(t *testing.T) *sentrysdk.Hub {
 	t.Helper()
 
