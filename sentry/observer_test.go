@@ -2,6 +2,7 @@ package sentry
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	wideops "github.com/druejaramillo/go-wide/ops"
@@ -135,12 +136,60 @@ func TestObserverEndRootFinishesRootTransaction(t *testing.T) {
 	}
 }
 
+func TestObserverErrorCapturesExceptionAndMarksActiveSpanFailed(t *testing.T) {
+	hub, transport := newTestHubWithTransport(t)
+	observer := NewObserver(hub)
+
+	rootCtx, err := wideops.StartRoot(context.Background(), "checkout", observer.RootOption())
+	if err != nil {
+		t.Fatalf("StartRoot() error = %v", err)
+	}
+
+	childCtx, err := wideops.Start(rootCtx, "charge")
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	childSpan := sentrysdk.SpanFromContext(childCtx)
+	if childSpan == nil {
+		t.Fatal("SpanFromContext(childCtx) = nil, want child span")
+	}
+
+	reportErr := errors.New("card declined")
+	_, err = wideops.Error(childCtx, reportErr)
+	if err != nil {
+		t.Fatalf("Error(childCtx, reportErr) error = %v", err)
+	}
+
+	if childSpan.Status != sentrysdk.SpanStatusInternalError {
+		t.Fatalf("childSpan.Status = %v, want %v", childSpan.Status, sentrysdk.SpanStatusInternalError)
+	}
+
+	events := transport.Events()
+	if len(events) != 1 {
+		t.Fatalf("captured event count = %d, want 1", len(events))
+	}
+
+	if got := events[0].Exception[0].Value; got != reportErr.Error() {
+		t.Fatalf("captured exception value = %q, want %q", got, reportErr.Error())
+	}
+}
+
 func newTestHub(t *testing.T) *sentrysdk.Hub {
 	t.Helper()
 
+	hub, _ := newTestHubWithTransport(t)
+	return hub
+}
+
+func newTestHubWithTransport(t *testing.T) (*sentrysdk.Hub, *sentrysdk.MockTransport) {
+	t.Helper()
+
+	transport := &sentrysdk.MockTransport{}
+
 	client, err := sentrysdk.NewClient(sentrysdk.ClientOptions{
 		Dsn:              "https://public@example.com/1",
-		Transport:        &sentrysdk.MockTransport{},
+		Transport:        transport,
 		EnableTracing:    true,
 		TracesSampleRate: 1,
 	})
@@ -148,5 +197,5 @@ func newTestHub(t *testing.T) *sentrysdk.Hub {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
-	return sentrysdk.NewHub(client, sentrysdk.NewScope())
+	return sentrysdk.NewHub(client, sentrysdk.NewScope()), transport
 }
