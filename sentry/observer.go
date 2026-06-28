@@ -54,7 +54,7 @@ func (o *Observer) OnStart(ctx context.Context, op *ops.Operation) context.Conte
 func (o *Observer) OnEnd(ctx context.Context, op *ops.Operation) context.Context {
 	// TODO: Finish child spans on child end without breaking parent operation context.
 	// TODO: Finish the root transaction on root end.
-	if op == nil || len(op.Ops()) == 1 {
+	if op == nil {
 		return ctx
 	}
 
