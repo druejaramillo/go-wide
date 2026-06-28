@@ -36,13 +36,18 @@ func (o *Observer) OnStart(ctx context.Context, op *ops.Operation) context.Conte
 		return ctx
 	}
 
-	hub := o.hub.Clone()
-	ctx = sentrysdk.SetHubOnContext(ctx, hub)
-
 	if len(op.Ops()) != 1 {
-		return ctx
+		parentSpan := sentrysdk.SpanFromContext(ctx)
+		if parentSpan == nil {
+			return ctx
+		}
+
+		childSpan := parentSpan.StartChild(op.Op)
+		return childSpan.Context()
 	}
 
+	hub := o.hub.Clone()
+	ctx = sentrysdk.SetHubOnContext(ctx, hub)
 	transaction := sentrysdk.StartTransaction(ctx, op.Op)
 	return sentrysdk.SetHubOnContext(transaction.Context(), hub)
 }
