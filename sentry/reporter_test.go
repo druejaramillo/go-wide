@@ -48,3 +48,14 @@ func TestReporterCaptureFallsBackToBaseHub(t *testing.T) {
 		t.Fatalf("captured exception value = %q, want %q", got, reportErr.Error())
 	}
 }
+
+func TestReporterCaptureNilErrorIsNoOp(t *testing.T) {
+	baseHub, baseTransport := newTestHubWithTransport(t)
+	reporter := NewReporter(baseHub)
+
+	reporter.Capture(context.Background(), nil)
+
+	if got := len(baseTransport.Events()); got != 0 {
+		t.Fatalf("base transport captured %d events, want 0", got)
+	}
+}
