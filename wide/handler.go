@@ -277,20 +277,6 @@ func (s *aggregateState) isOverflowed() bool {
 	return s.overflowed
 }
 
-func (s *aggregateState) overflow(limit int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.overflowed = true
-	s.collected = 0
-
-	// discard buffered aggregate state but keep root node alive
-	s.root.shared = nil
-	s.root.variants = nil
-	s.root.logs = nil
-	s.root.children = map[string]*aggregateNode{}
-}
-
 func (s *aggregateState) collect(node *aggregateNode, r slog.Record) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
