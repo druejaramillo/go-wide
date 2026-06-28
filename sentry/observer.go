@@ -69,8 +69,21 @@ func (o *Observer) OnEnd(ctx context.Context, op *ops.Operation) context.Context
 func (o *Observer) OnError(ctx context.Context, op *ops.Operation, err error) {
 	// TODO: Capture each non-nil ops.Error call to Sentry and mark the active span failed.
 	// TODO: Preserve repeated capture behavior across repeated ops.Error calls.
-	_ = ctx
 	_ = op
-	_ = err
-	return
+	if err == nil {
+		return
+	}
+
+	span := sentrysdk.SpanFromContext(ctx)
+	if span != nil {
+		span.Status = sentrysdk.SpanStatusInternalError
+	}
+
+	hub := sentrysdk.GetHubFromContext(ctx)
+	if hub == nil {
+		hub = o.hub
+	}
+	if hub != nil {
+		hub.CaptureException(err)
+	}
 }
