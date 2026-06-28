@@ -172,6 +172,88 @@ func TestNormalizeSnapshotAllowsExternalPackagesToReuseWideEventOperationShaping
 	}
 }
 
+func TestNormalizeSnapshotMergesSameNamedChildrenForExternalStrategies(t *testing.T) {
+	attrs := attrsToTree(wide.NormalizeSnapshot(wide.OperationSnapshot{
+		Name: "root",
+		Children: []wide.OperationSnapshot{
+			{
+				Name:   "charge",
+				Status: "ok",
+				Attrs: []slog.Attr{
+					slog.String("provider", "stripe"),
+					slog.String("phase", "authorize"),
+				},
+			},
+			{
+				Name:   "charge",
+				Status: "error",
+				Error:  context.DeadlineExceeded.Error(),
+				Attrs: []slog.Attr{
+					slog.String("provider", "stripe"),
+					slog.String("phase", "capture"),
+				},
+			},
+		},
+	}))
+
+	child, ok := attrs["charge"].(map[string]any)
+	if !ok {
+		t.Fatalf("charge = %T, want map[string]any", attrs["charge"])
+	}
+
+	if child["count"] != int64(2) {
+		t.Fatalf("charge.count = %v, want %v", child["count"], 2)
+	}
+
+	if child["provider"] != "stripe" {
+		t.Fatalf("charge.provider = %v, want %q", child["provider"], "stripe")
+	}
+
+	if _, ok := child["phase"]; ok {
+		t.Fatalf("charge.phase should be summarized under variants, child = %v", child)
+	}
+
+	if _, ok := child["status"]; ok {
+		t.Fatalf("charge.status should be summarized under variants, child = %v", child)
+	}
+
+	if _, ok := child["error"]; ok {
+		t.Fatalf("charge.error should be summarized under variants, child = %v", child)
+	}
+
+	variants, ok := child["variants"].(map[string]any)
+	if !ok {
+		t.Fatalf("charge.variants = %T, want map[string]any", child["variants"])
+	}
+
+	phases, ok := variants["phase"].([]any)
+	if !ok {
+		t.Fatalf("charge.variants.phase = %T, want []any", variants["phase"])
+	}
+
+	if !reflect.DeepEqual(phases, []any{"authorize", "capture"}) {
+		t.Fatalf("charge.variants.phase = %v, want %v", phases, []any{"authorize", "capture"})
+	}
+
+	statuses, ok := variants["status"].([]any)
+	if !ok {
+		t.Fatalf("charge.variants.status = %T, want []any", variants["status"])
+	}
+
+	if !reflect.DeepEqual(statuses, []any{"ok", "error"}) {
+		t.Fatalf("charge.variants.status = %v, want %v", statuses, []any{"ok", "error"})
+	}
+
+	errors, ok := variants["error"].([]any)
+	if !ok {
+		t.Fatalf("charge.variants.error = %T, want []any", variants["error"])
+	}
+
+	if !reflect.DeepEqual(errors, []any{context.DeadlineExceeded.Error()}) {
+		t.Fatalf("charge.variants.error = %v, want %v", errors, []any{context.DeadlineExceeded.Error()})
+	}
+}
+
 func TestCustomStrategyCanConsumePublicSurfaceWithoutInternalImports(t *testing.T) {
 	downstream := &publicRecordingHandler{}
 	strategy := &captureStrategy{}
