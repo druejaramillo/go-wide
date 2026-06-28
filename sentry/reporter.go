@@ -21,7 +21,14 @@ func (r *Reporter) Capture(ctx context.Context, err error) {
 	// TODO: Capture non-nil errors with the hub from ctx when present.
 	// TODO: Fall back to the reporter base hub when ctx has no Sentry hub.
 	// TODO: Treat nil errors as a no-op.
-	_ = ctx
-	_ = err
-	return
+	if err == nil {
+		return
+	}
+
+	hub := sentrysdk.GetHubFromContext(ctx)
+	if hub == nil {
+		return
+	}
+
+	hub.CaptureException(err)
 }
