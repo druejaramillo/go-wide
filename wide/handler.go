@@ -110,8 +110,12 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 			Message: effectiveRecord.Message,
 			Attrs:   attrsFromRecord(effectiveRecord),
 		}
+
 		h.config.customStrategy.Collect(entry)
-		state.collectSnapshotLog(node, entry)
+
+		raw := rawNodeFromContext(ctx)
+		state.collectRawLog(raw, entry)
+
 		return nil
 	}
 
@@ -226,6 +230,7 @@ type contextKey string
 const (
 	aggregateStateKey contextKey = "go-wide.wide.aggregate_state"
 	aggregateNodeKey  contextKey = "go-wide.wide.aggregate_node"
+	rawNodeKey        contextKey = "go-wide.wide.raw_node"
 )
 
 type aggregateState struct {
@@ -233,6 +238,7 @@ type aggregateState struct {
 	start      time.Time
 	status     string
 	root       *aggregateNode
+	rawRoot    *rawNode
 	limit      int
 	collected  int
 	overflowed bool
@@ -279,11 +285,19 @@ func aggregateStateFromContext(ctx context.Context) *aggregateState {
 }
 
 func aggregateNodeFromContext(ctx context.Context) *aggregateNode {
-	state, ok := ctx.Value(aggregateNodeKey).(*aggregateNode)
-	if state == nil || !ok {
+	node, ok := ctx.Value(aggregateNodeKey).(*aggregateNode)
+	if node == nil || !ok {
 		return nil
 	}
-	return state
+	return node
+}
+
+func rawNodeFromContext(ctx context.Context) *rawNode {
+	node, ok := ctx.Value(rawNodeKey).(*rawNode)
+	if node == nil || !ok {
+		return nil
+	}
+	return node
 }
 
 func (s *aggregateState) isOverflowed() bool {
@@ -609,18 +623,30 @@ func (o *aggregateObserver) OnStart(ctx context.Context, op *ops.Operation) cont
 			name:     op.Op,
 			children: map[string]*aggregateNode{},
 		}
+		rawRoot := &rawNode{name: op.Op}
+
 		state := &aggregateState{
-			start:  time.Now(),
-			status: "ok",
-			root:   root,
-			limit:  o.limit,
+			start:   time.Now(),
+			status:  "ok",
+			root:    root,
+			rawRoot: rawRoot,
+			limit:   o.limit,
 		}
+
 		ctx = context.WithValue(ctx, aggregateStateKey, state)
-		return context.WithValue(ctx, aggregateNodeKey, root)
+		ctx = context.WithValue(ctx, aggregateNodeKey, root)
+		return context.WithValue(ctx, rawNodeKey, rawRoot)
 	}
+
 	parent := aggregateNodeFromContext(ctx)
 	child := state.childNode(parent, op.Op)
-	return context.WithValue(ctx, aggregateNodeKey, child)
+
+	rawParent := rawNodeFromContext(ctx)
+	rawChild := &rawNode{name: op.Op}
+	rawParent.children = append(rawParent.children, rawChild)
+
+	ctx = context.WithValue(ctx, aggregateNodeKey, child)
+	return context.WithValue(ctx, rawNodeKey, rawChild)
 }
 
 func (s *aggregateState) childNode(parent *aggregateNode, name string) *aggregateNode {
@@ -661,7 +687,8 @@ func (s *aggregateState) markNodeError(node *aggregateNode, err error) {
 func (o *aggregateObserver) OnEnd(ctx context.Context, op *ops.Operation) context.Context {
 	state := aggregateStateFromContext(ctx)
 	node := aggregateNodeFromContext(ctx)
-	if state == nil || node == nil {
+	raw := rawNodeFromContext(ctx)
+	if state == nil || node == nil || raw == nil {
 		return ctx
 	}
 
@@ -670,6 +697,7 @@ func (o *aggregateObserver) OnEnd(ctx context.Context, op *ops.Operation) contex
 	}
 
 	state.setNodeAttrs(node, op.Attrs())
+	state.setRawNodeAttrs(raw, op.Attrs())
 
 	if len(op.Ops()) != 1 {
 		return ctx
@@ -677,7 +705,7 @@ func (o *aggregateObserver) OnEnd(ctx context.Context, op *ops.Operation) contex
 
 	var record slog.Record
 	if o.strategy != nil {
-		record = o.strategy.Flush(state.snapshot(op))
+		record = o.strategy.Flush(state.rawSnapshot(op))
 	} else {
 		record = state.finalRecord(op)
 	}
@@ -687,6 +715,12 @@ func (o *aggregateObserver) OnEnd(ctx context.Context, op *ops.Operation) contex
 	}
 
 	return ctx
+}
+
+func (s *aggregateState) setRawNodeAttrs(node *rawNode, attrs []slog.Attr) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	node.attrs = append(node.attrs, cloneAttrs(attrs)...)
 }
 
 func (s *aggregateState) setNodeAttrs(node *aggregateNode, attrs []slog.Attr) {
@@ -758,11 +792,32 @@ func (o *aggregateObserver) OnError(ctx context.Context, op *ops.Operation, err 
 	state.markError()
 
 	node := aggregateNodeFromContext(ctx)
-	if node == nil {
-		return
+	if node != nil {
+		state.markNodeError(node, err)
 	}
 
-	state.markNodeError(node, err)
+	raw := rawNodeFromContext(ctx)
+	if raw != nil {
+		state.markRawNodeError(raw, err)
+	}
+}
+
+func (s *aggregateState) markRawNodeError(node *rawNode, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	node.status = "error"
+	node.errMsg = err.Error()
+}
+
+func (s *aggregateState) collectRawLog(node *rawNode, entry LogEntry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	node.logs = append(node.logs, LogEntry{
+		Level:   entry.Level,
+		Message: entry.Message,
+		Attrs:   cloneAttrs(entry.Attrs),
+	})
 }
 
 func (s *aggregateState) collectSnapshotLog(node *aggregateNode, entry LogEntry) {
@@ -774,6 +829,31 @@ func (s *aggregateState) collectSnapshotLog(node *aggregateNode, entry LogEntry)
 		Message: entry.Message,
 		Attrs:   cloneAttrs(entry.Attrs),
 	})
+}
+
+func (s *aggregateState) rawSnapshot(op *ops.Operation) OperationSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return rawSnapshotFromNode(s.rawRoot, true)
+}
+
+func rawSnapshotFromNode(node *rawNode, isRoot bool) OperationSnapshot {
+	snapshot := OperationSnapshot{
+		Name:  node.name,
+		Attrs: cloneAttrs(node.attrs),
+		Logs:  cloneLogEntries(node.logs),
+	}
+
+	if !isRoot {
+		snapshot.Status = node.status
+		snapshot.Error = node.errMsg
+	}
+
+	for _, child := range node.children {
+		snapshot.Children = append(snapshot.Children, rawSnapshotFromNode(child, false))
+	}
+
+	return snapshot
 }
 
 func (s *aggregateState) snapshot(op *ops.Operation) OperationSnapshot {

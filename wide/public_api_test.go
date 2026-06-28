@@ -301,6 +301,84 @@ func TestCustomStrategyCanConsumePublicSurfaceWithoutInternalImports(t *testing.
 	}
 }
 
+func TestCustomStrategyFlushesRawSnapshotsWithoutMergingSameNamedChildren(t *testing.T) {
+	strategy := &captureStrategy{}
+	handler := wide.NewHandler(&publicRecordingHandler{}, wide.WithStrategy(strategy))
+
+	rootCtx, err := ops.StartRoot(context.Background(), "root", handler.RootOption())
+	if err != nil {
+		t.Fatalf("StartRoot() error = %v", err)
+	}
+
+	firstChildCtx, err := ops.Start(rootCtx, "charge")
+	if err != nil {
+		t.Fatalf("Start(first child) error = %v", err)
+	}
+	if err := ops.WithAttrs(firstChildCtx, slog.String("phase", "authorize")); err != nil {
+		t.Fatalf("WithAttrs(first child) error = %v", err)
+	}
+	if _, err := ops.End(firstChildCtx); err != nil {
+		t.Fatalf("End(first child) error = %v", err)
+	}
+
+	secondChildCtx, err := ops.Start(rootCtx, "charge")
+	if err != nil {
+		t.Fatalf("Start(second child) error = %v", err)
+	}
+	if err := ops.WithAttrs(secondChildCtx, slog.String("phase", "capture")); err != nil {
+		t.Fatalf("WithAttrs(second child) error = %v", err)
+	}
+	if _, err := ops.End(secondChildCtx); err != nil {
+		t.Fatalf("End(second child) error = %v", err)
+	}
+
+	if _, err := ops.End(rootCtx); err != nil {
+		t.Fatalf("End(root) error = %v", err)
+	}
+
+	if len(strategy.flushed) != 1 {
+		t.Fatalf("flush count = %d, want 1", len(strategy.flushed))
+	}
+
+	snapshot := strategy.flushed[0]
+	if len(snapshot.Children) != 2 {
+		t.Fatalf("snapshot child count = %d, want 2 separate raw child snapshots", len(snapshot.Children))
+	}
+
+	first := snapshot.Children[0]
+	second := snapshot.Children[1]
+
+	if first.Name != "charge" {
+		t.Fatalf("first child name = %q, want %q", first.Name, "charge")
+	}
+	if second.Name != "charge" {
+		t.Fatalf("second child name = %q, want %q", second.Name, "charge")
+	}
+
+	firstAttrs := attrsToFlatMap(first.Attrs)
+	secondAttrs := attrsToFlatMap(second.Attrs)
+
+	if firstAttrs["phase"] != "authorize" {
+		t.Fatalf("first child phase = %v, want %q", firstAttrs["phase"], "authorize")
+	}
+	if secondAttrs["phase"] != "capture" {
+		t.Fatalf("second child phase = %v, want %q", secondAttrs["phase"], "capture")
+	}
+
+	if _, ok := firstAttrs["count"]; ok {
+		t.Fatalf("first child count should be absent from raw snapshot attrs: %v", firstAttrs)
+	}
+	if _, ok := secondAttrs["count"]; ok {
+		t.Fatalf("second child count should be absent from raw snapshot attrs: %v", secondAttrs)
+	}
+	if _, ok := firstAttrs["variants"]; ok {
+		t.Fatalf("first child variants should be absent from raw snapshot attrs: %v", firstAttrs)
+	}
+	if _, ok := secondAttrs["variants"]; ok {
+		t.Fatalf("second child variants should be absent from raw snapshot attrs: %v", secondAttrs)
+	}
+}
+
 func attrsToTree(attrs []slog.Attr) map[string]any {
 	out := map[string]any{}
 	for _, attr := range attrs {

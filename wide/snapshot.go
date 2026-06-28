@@ -2,6 +2,15 @@ package wide
 
 import "log/slog"
 
+type rawNode struct {
+	name     string
+	attrs    []slog.Attr
+	logs     []LogEntry
+	children []*rawNode
+	status   string
+	errMsg   string
+}
+
 type OperationSnapshot struct {
 	Name     string
 	Attrs    []slog.Attr
