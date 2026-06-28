@@ -175,6 +175,47 @@ func TestObserverErrorCapturesExceptionAndMarksActiveSpanFailed(t *testing.T) {
 	}
 }
 
+func TestObserverErrorCapturesEveryNonNilOperationError(t *testing.T) {
+	hub, transport := newTestHubWithTransport(t)
+	observer := NewObserver(hub)
+
+	rootCtx, err := wideops.StartRoot(context.Background(), "checkout", observer.RootOption())
+	if err != nil {
+		t.Fatalf("StartRoot() error = %v", err)
+	}
+
+	childCtx, err := wideops.Start(rootCtx, "charge")
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	firstErr := errors.New("card declined")
+	secondErr := errors.New("issuer unavailable")
+
+	childCtx, err = wideops.Error(childCtx, firstErr)
+	if err != nil {
+		t.Fatalf("Error(childCtx, firstErr) error = %v", err)
+	}
+
+	_, err = wideops.Error(childCtx, secondErr)
+	if err != nil {
+		t.Fatalf("Error(childCtx, secondErr) error = %v", err)
+	}
+
+	events := transport.Events()
+	if len(events) != 2 {
+		t.Fatalf("captured event count = %d, want 2", len(events))
+	}
+
+	if got := events[0].Exception[0].Value; got != firstErr.Error() {
+		t.Fatalf("first captured exception value = %q, want %q", got, firstErr.Error())
+	}
+
+	if got := events[1].Exception[0].Value; got != secondErr.Error() {
+		t.Fatalf("second captured exception value = %q, want %q", got, secondErr.Error())
+	}
+}
+
 func newTestHub(t *testing.T) *sentrysdk.Hub {
 	t.Helper()
 
