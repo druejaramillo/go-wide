@@ -23,10 +23,12 @@ type handlerStrategy string
 const (
 	strategyPassthrough handlerStrategy = "passthrough"
 	strategyAggregate   handlerStrategy = "aggregate"
+	strategyCustom      handlerStrategy = "custom"
 )
 
 type handlerConfig struct {
 	strategy       handlerStrategy
+	customStrategy Strategy
 	aggregateLimit int
 }
 
@@ -102,6 +104,17 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 		)...,
 	)
 
+	if h.config.strategy == strategyCustom {
+		entry := LogEntry{
+			Level:   effectiveRecord.Level,
+			Message: effectiveRecord.Message,
+			Attrs:   attrsFromRecord(effectiveRecord),
+		}
+		h.config.customStrategy.Collect(entry)
+		state.collectSnapshotLog(node, entry)
+		return nil
+	}
+
 	if overflowed := state.collect(node, effectiveRecord); overflowed {
 		diagnostic := slog.NewRecord(time.Now(), slog.LevelWarn, "wide aggregate overflow", 0)
 		diagnostic.AddAttrs(
@@ -170,7 +183,7 @@ func cloneAttrs(attrs []slog.Attr) []slog.Attr {
 }
 
 func (h *Handler) RootOption() ops.Option {
-	if h.config.strategy != strategyAggregate {
+	if h.config.strategy == strategyPassthrough {
 		return func(rc *ops.RootConfig) {
 			rc.LifecycleObservers = append(rc.LifecycleObservers, noopLifecycleObserver{})
 			rc.ErrorObservers = append(rc.ErrorObservers, noopErrorObserver{})
@@ -184,8 +197,9 @@ func (h *Handler) RootOption() ops.Option {
 		}
 
 		observer := &aggregateObserver{
-			handler: h.rootHandler,
-			limit:   h.config.aggregateLimit,
+			handler:  h.rootHandler,
+			limit:    h.config.aggregateLimit,
+			strategy: h.config.customStrategy,
 		}
 		rc.LifecycleObservers = append(rc.LifecycleObservers, observer)
 		rc.ErrorObservers = append(rc.ErrorObservers, observer)
@@ -225,14 +239,15 @@ type aggregateState struct {
 }
 
 type aggregateNode struct {
-	name     string
-	count    int
-	shared   map[string]slog.Value
-	variants map[string][]slog.Value
-	logs     []collectedRecord
-	children map[string]*aggregateNode
-	status   string
-	errMsg   string
+	name         string
+	count        int
+	shared       map[string]slog.Value
+	variants     map[string][]slog.Value
+	logs         []collectedRecord
+	snapshotLogs []LogEntry
+	children     map[string]*aggregateNode
+	status       string
+	errMsg       string
 }
 
 type collectedRecord struct {
@@ -582,8 +597,9 @@ func (s *aggregateState) markError() {
 }
 
 type aggregateObserver struct {
-	handler slog.Handler
-	limit   int
+	handler  slog.Handler
+	limit    int
+	strategy Strategy
 }
 
 func (o *aggregateObserver) OnStart(ctx context.Context, op *ops.Operation) context.Context {
@@ -659,7 +675,13 @@ func (o *aggregateObserver) OnEnd(ctx context.Context, op *ops.Operation) contex
 		return ctx
 	}
 
-	record := state.finalRecord(op)
+	var record slog.Record
+	if o.strategy != nil {
+		record = o.strategy.Flush(state.snapshot(op))
+	} else {
+		record = state.finalRecord(op)
+	}
+
 	if err := o.handler.Handle(ctx, record); err != nil {
 		return ops.WithEndError(ctx, err)
 	}
@@ -741,4 +763,65 @@ func (o *aggregateObserver) OnError(ctx context.Context, op *ops.Operation, err 
 	}
 
 	state.markNodeError(node, err)
+}
+
+func (s *aggregateState) collectSnapshotLog(node *aggregateNode, entry LogEntry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	node.snapshotLogs = append(node.snapshotLogs, LogEntry{
+		Level:   entry.Level,
+		Message: entry.Message,
+		Attrs:   cloneAttrs(entry.Attrs),
+	})
+}
+
+func (s *aggregateState) snapshot(op *ops.Operation) OperationSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return snapshotFromNode(s.root, op.Op, true)
+}
+
+func snapshotFromNode(node *aggregateNode, name string, isRoot bool) OperationSnapshot {
+	snapshot := OperationSnapshot{
+		Name: name,
+		Logs: cloneLogEntries(node.snapshotLogs),
+	}
+
+	if len(node.shared) > 0 {
+		snapshot.Attrs = append(snapshot.Attrs, renderNestedValueMap(node.shared)...)
+	}
+	if len(node.variants) > 0 {
+		snapshot.Attrs = append(snapshot.Attrs, slog.GroupAttrs("variants", renderNestedVariants(node.variants)...))
+	}
+
+	if !isRoot {
+		snapshot.Status = node.status
+		snapshot.Error = node.errMsg
+		if node.count > 1 {
+			snapshot.Attrs = append(snapshot.Attrs, slog.Int("count", node.count))
+		}
+	}
+
+	for name, child := range node.children {
+		snapshot.Children = append(snapshot.Children, snapshotFromNode(child, name, false))
+	}
+
+	return snapshot
+}
+
+func cloneLogEntries(in []LogEntry) []LogEntry {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]LogEntry, len(in))
+	for i, entry := range in {
+		out[i] = LogEntry{
+			Level:   entry.Level,
+			Message: entry.Message,
+			Attrs:   cloneAttrs(entry.Attrs),
+		}
+	}
+	return out
 }

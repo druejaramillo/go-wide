@@ -6,12 +6,17 @@ It is intnentially not part of the "wide" package so it can only see the public 
 package wide_test
 
 import (
+	"context"
 	"log/slog"
 	"reflect"
 	"testing"
+	"time"
 
+	"github.com/druejaramillo/go-wide/ops"
 	"github.com/druejaramillo/go-wide/wide"
 )
+
+var _ wide.Strategy = (*captureStrategy)(nil)
 
 func TestNormalizeLogsAllowsExternalPackagesToReuseWideEventLogShaping(t *testing.T) {
 	logs := attrsToTree(wide.NormalizeLogs([]wide.LogEntry{
@@ -167,11 +172,201 @@ func TestNormalizeSnapshotAllowsExternalPackagesToReuseWideEventOperationShaping
 	}
 }
 
+func TestCustomStrategyCanConsumePublicSurfaceWithoutInternalImports(t *testing.T) {
+	downstream := &publicRecordingHandler{}
+	strategy := &captureStrategy{}
+	handler := wide.NewHandler(downstream, wide.WithStrategy(strategy))
+
+	rootCtx, err := ops.StartRoot(context.Background(), "root", handler.RootOption())
+	if err != nil {
+		t.Fatalf("StartRoot() error = %v", err)
+	}
+
+	if err := ops.WithAttrs(rootCtx, slog.String("request_id", "req-123")); err != nil {
+		t.Fatalf("WithAttrs(root) error = %v", err)
+	}
+
+	childCtx, err := ops.Start(rootCtx, "charge")
+	if err != nil {
+		t.Fatalf("Start(child) error = %v", err)
+	}
+
+	if err := ops.WithAttrs(childCtx, slog.String("provider", "stripe")); err != nil {
+		t.Fatalf("WithAttrs(child) error = %v", err)
+	}
+
+	slog.New(handler).InfoContext(childCtx, "retrying charge", slog.Int("attempt", 1))
+
+	childCtx, err = ops.Error(childCtx, context.DeadlineExceeded)
+	if err != nil {
+		t.Fatalf("Error(child) error = %v", err)
+	}
+
+	if _, err := ops.End(childCtx); err != nil {
+		t.Fatalf("End(child) error = %v", err)
+	}
+
+	if _, err := ops.End(rootCtx); err != nil {
+		t.Fatalf("End(root) error = %v", err)
+	}
+
+	if len(strategy.collected) != 1 {
+		t.Fatalf("collect count = %d, want 1", len(strategy.collected))
+	}
+
+	entry := strategy.collected[0]
+	if entry.Message != "retrying charge" {
+		t.Fatalf("collected message = %q, want %q", entry.Message, "retrying charge")
+	}
+
+	entryAttrs := attrsToFlatMap(entry.Attrs)
+	if entryAttrs["attempt"] != int64(1) {
+		t.Fatalf("collected attempt = %v, want %v", entryAttrs["attempt"], 1)
+	}
+
+	if len(strategy.flushed) != 1 {
+		t.Fatalf("flush count = %d, want 1", len(strategy.flushed))
+	}
+
+	snapshot := strategy.flushed[0]
+	if snapshot.Name != "root" {
+		t.Fatalf("snapshot.Name = %q, want %q", snapshot.Name, "root")
+	}
+
+	rootAttrs := attrsToFlatMap(snapshot.Attrs)
+	if rootAttrs["request_id"] != "req-123" {
+		t.Fatalf("snapshot request_id = %v, want %q", rootAttrs["request_id"], "req-123")
+	}
+
+	if len(snapshot.Children) != 1 {
+		t.Fatalf("snapshot child count = %d, want 1", len(snapshot.Children))
+	}
+
+	child := snapshot.Children[0]
+	if child.Name != "charge" {
+		t.Fatalf("child.Name = %q, want %q", child.Name, "charge")
+	}
+	if child.Status != "error" {
+		t.Fatalf("child.Status = %q, want %q", child.Status, "error")
+	}
+	if child.Error != context.DeadlineExceeded.Error() {
+		t.Fatalf("child.Error = %q, want %q", child.Error, context.DeadlineExceeded.Error())
+	}
+
+	childAttrs := attrsToFlatMap(child.Attrs)
+	if childAttrs["provider"] != "stripe" {
+		t.Fatalf("child provider = %v, want %q", childAttrs["provider"], "stripe")
+	}
+
+	if len(child.Logs) != 1 {
+		t.Fatalf("child log count = %d, want 1", len(child.Logs))
+	}
+	if child.Logs[0].Message != "retrying charge" {
+		t.Fatalf("child log message = %q, want %q", child.Logs[0].Message, "retrying charge")
+	}
+
+	records := downstream.Records()
+	if len(records) != 1 {
+		t.Fatalf("record count = %d, want 1", len(records))
+	}
+
+	if records[0].Message != "custom-wide" {
+		t.Fatalf("record message = %q, want %q", records[0].Message, "custom-wide")
+	}
+
+	recordAttrs := recordToTree(records[0])
+	if recordAttrs["collected_logs"] != int64(1) {
+		t.Fatalf("record collected_logs = %v, want %v", recordAttrs["collected_logs"], 1)
+	}
+
+	snapshotTree, ok := recordAttrs["snapshot"].(map[string]any)
+	if !ok {
+		t.Fatalf("record snapshot = %T, want map[string]any", recordAttrs["snapshot"])
+	}
+
+	if snapshotTree["request_id"] != "req-123" {
+		t.Fatalf("record snapshot.request_id = %v, want %q", snapshotTree["request_id"], "req-123")
+	}
+
+	chargeTree, ok := snapshotTree["charge"].(map[string]any)
+	if !ok {
+		t.Fatalf("record snapshot.charge = %T, want map[string]any", snapshotTree["charge"])
+	}
+
+	if chargeTree["status"] != "error" {
+		t.Fatalf("record snapshot.charge.status = %v, want %q", chargeTree["status"], "error")
+	}
+	if chargeTree["error"] != context.DeadlineExceeded.Error() {
+		t.Fatalf("record snapshot.charge.error = %v, want %q", chargeTree["error"], context.DeadlineExceeded.Error())
+	}
+}
+
 func attrsToTree(attrs []slog.Attr) map[string]any {
 	out := map[string]any{}
 	for _, attr := range attrs {
 		out[attr.Key] = attrValueTree(attr.Value)
 	}
+	return out
+}
+
+func attrsToFlatMap(attrs []slog.Attr) map[string]any {
+	out := map[string]any{}
+	for _, attr := range attrs {
+		out[attr.Key] = attr.Value.Resolve().Any()
+	}
+	return out
+}
+
+type captureStrategy struct {
+	collected []wide.LogEntry
+	flushed   []wide.OperationSnapshot
+}
+
+func (s *captureStrategy) Collect(entry wide.LogEntry) {
+	s.collected = append(s.collected, entry)
+}
+
+func (s *captureStrategy) Flush(snapshot wide.OperationSnapshot) slog.Record {
+	s.flushed = append(s.flushed, snapshot)
+	record := slog.NewRecord(time.Unix(0, 0), slog.LevelInfo, "custom-wide", 0)
+	record.AddAttrs(
+		slog.Int("collected_logs", len(s.collected)),
+		slog.GroupAttrs("snapshot", wide.NormalizeSnapshot(snapshot)...),
+	)
+	return record
+}
+
+type publicRecordingHandler struct {
+	records []slog.Record
+}
+
+func (h *publicRecordingHandler) Enabled(context.Context, slog.Level) bool {
+	return true
+}
+
+func (h *publicRecordingHandler) Handle(_ context.Context, record slog.Record) error {
+	h.records = append(h.records, record.Clone())
+	return nil
+}
+
+func (h *publicRecordingHandler) WithAttrs([]slog.Attr) slog.Handler {
+	return h
+}
+
+func (h *publicRecordingHandler) WithGroup(string) slog.Handler {
+	return h
+}
+
+func (h *publicRecordingHandler) Records() []slog.Record {
+	return append([]slog.Record(nil), h.records...)
+}
+
+func recordToTree(record slog.Record) map[string]any {
+	out := map[string]any{}
+	record.Attrs(func(attr slog.Attr) bool {
+		out[attr.Key] = attrValueTree(attr.Value)
+		return true
+	})
 	return out
 }
 
