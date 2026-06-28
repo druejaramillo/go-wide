@@ -112,6 +112,29 @@ func TestObserverEndChildFinishesChildSpanAndRestoresRootTransaction(t *testing.
 	}
 }
 
+func TestObserverEndRootFinishesRootTransaction(t *testing.T) {
+	observer := NewObserver(newTestHub(t))
+
+	rootCtx, err := wideops.StartRoot(context.Background(), "checkout", observer.RootOption())
+	if err != nil {
+		t.Fatalf("StartRoot() error = %v", err)
+	}
+
+	rootTransaction := sentrysdk.TransactionFromContext(rootCtx)
+	if rootTransaction == nil {
+		t.Fatal("TransactionFromContext(rootCtx) = nil, want root transaction")
+	}
+
+	_, err = wideops.End(rootCtx)
+	if err != nil {
+		t.Fatalf("End(rootCtx) error = %v", err)
+	}
+
+	if rootTransaction.EndTime.IsZero() {
+		t.Fatal("rootTransaction.EndTime is zero, want finished root transaction")
+	}
+}
+
 func newTestHub(t *testing.T) *sentrysdk.Hub {
 	t.Helper()
 
