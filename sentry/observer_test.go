@@ -70,6 +70,48 @@ func TestObserverStartChildDerivesChildSpan(t *testing.T) {
 	}
 }
 
+func TestObserverEndChildFinishesChildSpanAndRestoresRootTransaction(t *testing.T) {
+	observer := NewObserver(newTestHub(t))
+
+	rootCtx, err := wideops.StartRoot(context.Background(), "checkout", observer.RootOption())
+	if err != nil {
+		t.Fatalf("StartRoot() error = %v", err)
+	}
+
+	rootTransaction := sentrysdk.TransactionFromContext(rootCtx)
+	if rootTransaction == nil {
+		t.Fatal("TransactionFromContext(rootCtx) = nil, want root transaction")
+	}
+
+	childCtx, err := wideops.Start(rootCtx, "charge")
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	childSpan := sentrysdk.SpanFromContext(childCtx)
+	if childSpan == nil {
+		t.Fatal("SpanFromContext(childCtx) = nil, want child span")
+	}
+
+	parentCtx, err := wideops.End(childCtx)
+	if err != nil {
+		t.Fatalf("End(childCtx) error = %v", err)
+	}
+
+	if childSpan.EndTime.IsZero() {
+		t.Fatal("childSpan.EndTime is zero, want finished child span")
+	}
+
+	restoredTransaction := sentrysdk.TransactionFromContext(parentCtx)
+	if restoredTransaction == nil {
+		t.Fatal("TransactionFromContext(parentCtx) = nil, want root transaction")
+	}
+
+	if restoredTransaction != rootTransaction {
+		t.Fatal("TransactionFromContext(parentCtx) did not restore the root transaction")
+	}
+}
+
 func newTestHub(t *testing.T) *sentrysdk.Hub {
 	t.Helper()
 
