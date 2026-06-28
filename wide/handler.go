@@ -245,15 +245,14 @@ type aggregateState struct {
 }
 
 type aggregateNode struct {
-	name         string
-	count        int
-	shared       map[string]slog.Value
-	variants     map[string][]slog.Value
-	logs         []collectedRecord
-	snapshotLogs []LogEntry
-	children     map[string]*aggregateNode
-	status       string
-	errMsg       string
+	name     string
+	count    int
+	shared   map[string]slog.Value
+	variants map[string][]slog.Value
+	logs     []collectedRecord
+	children map[string]*aggregateNode
+	status   string
+	errMsg   string
 }
 
 type collectedRecord struct {
@@ -826,18 +825,7 @@ func (s *aggregateState) collectRawLog(node *rawNode, entry LogEntry) {
 	})
 }
 
-func (s *aggregateState) collectSnapshotLog(node *aggregateNode, entry LogEntry) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	node.snapshotLogs = append(node.snapshotLogs, LogEntry{
-		Level:   entry.Level,
-		Message: entry.Message,
-		Attrs:   cloneAttrs(entry.Attrs),
-	})
-}
-
-func (s *aggregateState) rawSnapshot(op *ops.Operation) OperationSnapshot {
+func (s *aggregateState) rawSnapshot(_ *ops.Operation) OperationSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	snapshot := rawSnapshotFromNode(s.rawRoot, true)
@@ -845,7 +833,7 @@ func (s *aggregateState) rawSnapshot(op *ops.Operation) OperationSnapshot {
 	return snapshot
 }
 
-func rawSnapshotFromNode(node *rawNode, isRoot bool) OperationSnapshot {
+func rawSnapshotFromNode(node *rawNode, _ bool) OperationSnapshot {
 	snapshot := OperationSnapshot{
 		Name:   node.name,
 		Attrs:  cloneAttrs(node.attrs),
@@ -856,41 +844,6 @@ func rawSnapshotFromNode(node *rawNode, isRoot bool) OperationSnapshot {
 
 	for _, child := range node.children {
 		snapshot.Children = append(snapshot.Children, rawSnapshotFromNode(child, false))
-	}
-
-	return snapshot
-}
-
-func (s *aggregateState) snapshot(op *ops.Operation) OperationSnapshot {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return snapshotFromNode(s.root, op.Op, true)
-}
-
-func snapshotFromNode(node *aggregateNode, name string, isRoot bool) OperationSnapshot {
-	snapshot := OperationSnapshot{
-		Name: name,
-		Logs: cloneLogEntries(node.snapshotLogs),
-	}
-
-	if len(node.shared) > 0 {
-		snapshot.Attrs = append(snapshot.Attrs, renderNestedValueMap(node.shared)...)
-	}
-	if len(node.variants) > 0 {
-		snapshot.Attrs = append(snapshot.Attrs, slog.GroupAttrs("variants", renderNestedVariants(node.variants)...))
-	}
-
-	if !isRoot {
-		snapshot.Status = node.status
-		snapshot.Error = node.errMsg
-		if node.count > 1 {
-			snapshot.Attrs = append(snapshot.Attrs, slog.Int("count", node.count))
-		}
-	}
-
-	for name, child := range node.children {
-		snapshot.Children = append(snapshot.Children, snapshotFromNode(child, name, false))
 	}
 
 	return snapshot
