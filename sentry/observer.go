@@ -32,7 +32,19 @@ func (o *Observer) RootOption() ops.Option {
 func (o *Observer) OnStart(ctx context.Context, op *ops.Operation) context.Context {
 	// TODO: Root start derives a context with a Sentry hub and root transaction.
 	// TODO: Child start derives a context with a child span under the active trace.
-	return ctx
+	if o == nil || o.hub == nil || op == nil {
+		return ctx
+	}
+
+	hub := o.hub.Clone()
+	ctx = sentrysdk.SetHubOnContext(ctx, hub)
+
+	if len(op.Ops()) != 1 {
+		return ctx
+	}
+
+	transaction := sentrysdk.StartTransaction(ctx, op.Op)
+	return sentrysdk.SetHubOnContext(transaction.Context(), hub)
 }
 
 func (o *Observer) OnEnd(ctx context.Context, op *ops.Operation) context.Context {
